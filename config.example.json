@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy this file to config.json and fill in your values. config.json is gitignored.",
+  "jira": {
+    "baseUrl": "https://mydomain.com/jira",
+    "email": "",
+    "apiToken": "",
+    "username": "your.username",
+    "password": "",
+    "defaultProject": "NWAP",
+    "isCloud": false,
+    "serverAuthMode": "pat"
+  },
+  "confluence": {
+    "baseUrl": "https://mydomain.com/confluence",
+    "email": "",
+    "apiToken": "",
+    "username": "your.username",
+    "password": "",
+    "spaceKey": "TEAM",
+    "parentPageId": ""
+  },
+  "teams": {
+    "defaultWebhookUrl": "",
+    "notifyChannel": "teams"
+  },
+  "alerts": {
+    "rules": [],
+    "pollIntervalMinutes": 15
+  }
+}
