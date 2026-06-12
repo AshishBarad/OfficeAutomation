@@ -17,7 +17,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Colour
+NC='\033[0m'
 
 # ── Helpers ──────────────────────────────────────────────────
 info()    { echo -e "${BLUE}ℹ${NC}  $*"; }
@@ -27,8 +27,38 @@ error()   { echo -e "${RED}✗${NC}  $*"; exit 1; }
 step()    { echo -e "\n${BOLD}${CYAN}▶  $*${NC}"; }
 
 PIDFILE=".server.pid"
-PORT=3000
+PORTFILE=".server.port"
 DEV_MODE=false
+
+# ── Find a free port ─────────────────────────────────────────
+# Tries ports in range 3100-3999 and returns the first free one.
+find_free_port() {
+  for port in $(shuf -i 3100-3999 -n 900 2>/dev/null || seq 3100 3999); do
+    if ! lsof -iTCP:"$port" -sTCP:LISTEN -t &>/dev/null 2>&1; then
+      echo "$port"
+      return
+    fi
+  done
+  error "Could not find a free port in range 3100-3999."
+}
+
+# ── Stop server ──────────────────────────────────────────────
+stop_server() {
+  if [ -f "$PIDFILE" ]; then
+    PID=$(cat "$PIDFILE")
+    PORT_USED=$(cat "$PORTFILE" 2>/dev/null || echo "unknown")
+    if kill -0 "$PID" 2>/dev/null; then
+      kill "$PID"
+      rm -f "$PIDFILE" "$PORTFILE"
+      success "Server stopped (was running on port $PORT_USED, PID $PID)"
+    else
+      warn "Server process $PID is no longer running"
+      rm -f "$PIDFILE" "$PORTFILE"
+    fi
+  else
+    warn "No .server.pid file found — server may not be running"
+  fi
+}
 
 # ── Parse flags ──────────────────────────────────────────────
 for arg in "$@"; do
@@ -37,29 +67,6 @@ for arg in "$@"; do
     --stop) stop_server; exit 0 ;;
   esac
 done
-
-stop_server() {
-  if [ -f "$PIDFILE" ]; then
-    PID=$(cat "$PIDFILE")
-    if kill -0 "$PID" 2>/dev/null; then
-      kill "$PID"
-      rm -f "$PIDFILE"
-      success "Server stopped (PID $PID)"
-    else
-      warn "No running server found for PID $PID"
-      rm -f "$PIDFILE"
-    fi
-  else
-    # Try killing by port as fallback
-    PORTPID=$(lsof -ti tcp:$PORT 2>/dev/null || true)
-    if [ -n "$PORTPID" ]; then
-      kill "$PORTPID"
-      success "Stopped process on port $PORT"
-    else
-      warn "No server running on port $PORT"
-    fi
-  fi
-}
 
 # ── Banner ───────────────────────────────────────────────────
 echo ""
@@ -90,7 +97,7 @@ success "npm $(npm -v) found"
 step "Installing dependencies"
 
 if [ -d "node_modules" ] && [ -f "package-lock.json" ]; then
-  info "node_modules already present — running npm ci for clean install"
+  info "node_modules already present — running npm ci for a clean install"
   npm ci --prefer-offline --silent 2>&1 | tail -3 || npm install --silent
 else
   info "Installing packages (this may take ~30 seconds)..."
@@ -103,10 +110,18 @@ step "Checking configuration"
 
 if [ ! -f "config.json" ]; then
   if [ -f "config.example.json" ]; then
-    cp config.example.json config.json
-    warn "Created config.json from template — open http://localhost:${PORT}/config to fill in your credentials"
+    # Strip the _comment field before copying
+    if command -v node &>/dev/null; then
+      node -e "
+        const c = require('./config.example.json');
+        delete c._comment;
+        require('fs').writeFileSync('config.json', JSON.stringify(c, null, 2));
+      "
+    else
+      cp config.example.json config.json
+    fi
+    warn "Created config.json from template — fill in your credentials at the /config page"
   else
-    # Create a minimal blank config so the app starts without crashing
     cat > config.json <<'JSON'
 {
   "jira": {
@@ -138,38 +153,35 @@ if [ ! -f "config.json" ]; then
   }
 }
 JSON
-    warn "Created blank config.json — open http://localhost:${PORT}/config to fill in your credentials"
+    warn "Created blank config.json — fill in your credentials at the /config page"
   fi
 else
   success "config.json exists"
 fi
 
-# ── Step 4: Kill any existing server on the port ─────────────
-EXISTING=$(lsof -ti tcp:$PORT 2>/dev/null || true)
-if [ -n "$EXISTING" ]; then
-  warn "Port $PORT in use — stopping existing process..."
-  kill "$EXISTING" 2>/dev/null || true
-  sleep 1
-fi
+# ── Step 4: Pick a free port ─────────────────────────────────
+step "Finding available port"
+PORT=$(find_free_port)
+success "Using port $PORT"
 
 # ── Step 5: Build + Start ────────────────────────────────────
 if [ "$DEV_MODE" = true ]; then
   step "Starting in development mode (hot reload)"
-  info "Press Ctrl+C to stop"
+  info "Port: $PORT  —  Press Ctrl+C to stop"
   echo ""
-  npm run dev
+  npm run dev -- --port "$PORT"
 else
   step "Building for production"
   info "Building optimised bundle..."
   npm run build --silent
 
   step "Starting production server"
-  # Run in background and save PID
-  npm start -- --port $PORT &
+  npm start -- --port "$PORT" &
   SERVER_PID=$!
-  echo $SERVER_PID > "$PIDFILE"
+  echo "$SERVER_PID" > "$PIDFILE"
+  echo "$PORT"       > "$PORTFILE"
 
-  # Wait until the server is actually up (up to 15s)
+  # Wait until the server is actually responding (up to 15s)
   echo -ne "${BLUE}ℹ${NC}  Waiting for server"
   for i in $(seq 1 30); do
     if curl -s "http://localhost:${PORT}" -o /dev/null 2>/dev/null; then
@@ -180,21 +192,22 @@ else
   done
   echo ""
 
-  success "Server running (PID $SERVER_PID)"
+  success "Server running on port $PORT (PID $SERVER_PID)"
 
-  # ── Open browser ───────────────────────────────────────────
   URL="http://localhost:${PORT}"
+  # Pad URL line to fill box width
+  PAD=$(printf '%*s' $((40 - ${#URL})) '')
   echo ""
   echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
   echo -e "${BOLD}${GREEN}║   🚀  App is ready!                      ║${NC}"
   echo -e "${BOLD}${GREEN}║                                          ║${NC}"
-  echo -e "${BOLD}${GREEN}║   ${URL}                   ║${NC}"
+  echo -e "${BOLD}${GREEN}║   ${URL}${PAD}║${NC}"
   echo -e "${BOLD}${GREEN}║                                          ║${NC}"
   echo -e "${BOLD}${GREEN}║   To stop:  bash setup.sh --stop         ║${NC}"
   echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
   echo ""
 
-  # Auto-open browser on macOS / Linux / WSL
+  # Auto-open browser (macOS / Linux / WSL)
   if command -v open &>/dev/null; then
     open "$URL"
   elif command -v xdg-open &>/dev/null; then

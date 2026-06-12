@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local config — contains credentials, never commit
 config.json
+
+# runtime files created by setup.sh
+.server.pid
+.server.port
