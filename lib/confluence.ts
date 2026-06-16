@@ -114,22 +114,38 @@ function escapeHtml(str: string | null | undefined): string {
     .replace(/'/g, "&#39;");
 }
 
-// ── Jira macro ────────────────────────────────────────────────────────────────
+// ── Jira macros ───────────────────────────────────────────────────────────────
 
-/**
- * Generates a Jira Issue/Filter macro with the correct server name and serverId.
- * Both are needed on Confluence Server/DC — without serverId you get
- * "Unable to locate Jira server for this macro".
- */
-function jiraMacro(jqlQuery: string, appLink: JiraAppLink): string {
-  const serverParam = appLink.serverName
+function appLinkParams(appLink: JiraAppLink): string {
+  const s = appLink.serverName
     ? `\n      <ac:parameter ac:name="server">${escapeHtml(appLink.serverName)}</ac:parameter>`
     : "";
-  const serverIdParam = appLink.serverId
+  const id = appLink.serverId
     ? `\n      <ac:parameter ac:name="serverId">${escapeHtml(appLink.serverId)}</ac:parameter>`
     : "";
-  return `<ac:structured-macro ac:name="jira">${serverParam}${serverIdParam}
-      <ac:parameter ac:name="jqlQuery">${escapeHtml(jqlQuery)}</ac:parameter>
+  return s + id;
+}
+
+/**
+ * Single-issue chip macro — uses the `key` parameter.
+ * Renders as "Jira | PROJ-123" inline chip with live status.
+ * Does NOT show a query box in the editor → no "hit Enter" needed.
+ */
+function jiraMacroKey(issueKey: string, appLink: JiraAppLink): string {
+  return `<ac:structured-macro ac:name="jira">${appLinkParams(appLink)}
+      <ac:parameter ac:name="key">${escapeHtml(issueKey)}</ac:parameter>
+    </ac:structured-macro>`;
+}
+
+/**
+ * Multi-issue filter macro — uses `jqlQuery` + explicit columns.
+ * Renders as a live table of results (used for "All Issues" per epic).
+ */
+function jiraMacroFilter(jql: string, appLink: JiraAppLink): string {
+  return `<ac:structured-macro ac:name="jira">${appLinkParams(appLink)}
+      <ac:parameter ac:name="jqlQuery">${escapeHtml(jql)}</ac:parameter>
+      <ac:parameter ac:name="columns">key,summary,status,assignee,priority</ac:parameter>
+      <ac:parameter ac:name="maximumIssues">50</ac:parameter>
     </ac:structured-macro>`;
 }
 
@@ -158,31 +174,43 @@ function buildEpicsSection(
 ): string {
   const separator = '<hr style="border-top: 3px dashed #bbb; margin: 24px 0;" />';
 
-  function storyRow(issue: JiraIssue, epicKey: string | null): string {
-    const pts = getStoryPoints(issue, spFieldId);
-    const projectKey = issue.key.split("-")[0];
+  function storyTable(issues: JiraIssue[], epicKey: string | null): string {
+    if (issues.length === 0) return "<p><em>No issues found.</em></p>";
+
+    // Build the "All Issues" filter cell — merged across all story rows (rowspan)
+    const projectKey = issues[0]?.key.split("-")[0] ?? "";
     const allIssuesJql = epicKey
       ? `project = ${projectKey} AND "Epic Link" = ${epicKey}`
       : "";
-    return `
-      <tr>
-        <td>${jiraMacro(`key = ${issue.key}`, appLink)}</td>
-        <td>${escapeHtml(issue.fields.status.name)}</td>
-        <td>${escapeHtml(issue.fields.summary)}</td>
-        <td>${escapeHtml(issue.fields.assignee?.displayName || "Unassigned")}</td>
-        <td style="text-align:center;">${pts > 0 ? pts : "—"}</td>
-        <td>${allIssuesJql ? jiraMacro(allIssuesJql, appLink) : ""}</td>
-      </tr>`;
-  }
 
-  function storyTable(issues: JiraIssue[], epicKey: string | null): string {
-    if (issues.length === 0) return "<p><em>No issues found.</em></p>";
+    const rows = issues.map((issue, idx) => {
+      const pts = getStoryPoints(issue, spFieldId);
+
+      // "All Issues" column: only on the first row, spanning all rows
+      const allIssuesCell =
+        idx === 0
+          ? `<td rowspan="${issues.length}" style="vertical-align:top;">${
+              allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
+            }</td>`
+          : ""; // omitted on subsequent rows (covered by rowspan)
+
+      return `
+        <tr>
+          <td>${jiraMacroKey(issue.key, appLink)}</td>
+          <td>${escapeHtml(issue.fields.status.name)}</td>
+          <td>${escapeHtml(issue.fields.summary)}</td>
+          <td>${escapeHtml(issue.fields.assignee?.displayName || "Unassigned")}</td>
+          <td style="text-align:center;">${pts > 0 ? pts : "—"}</td>
+          ${allIssuesCell}
+        </tr>`;
+    }).join("");
+
     return `
       <table data-layout="wide">
         <colgroup>
-          <col style="width: 200px;" /><col style="width: 120px;" />
-          <col style="width: 250px;" /><col style="width: 120px;" />
-          <col style="width: 60px;" /><col style="width: 280px;" />
+          <col style="width: 180px;" /><col style="width: 110px;" />
+          <col style="width: 240px;" /><col style="width: 120px;" />
+          <col style="width: 50px;" /><col style="width: 300px;" />
         </colgroup>
         <tbody>
           <tr>
@@ -193,7 +221,7 @@ function buildEpicsSection(
             <th><strong>SP</strong></th>
             <th><strong>All Issues</strong></th>
           </tr>
-          ${issues.map((i) => storyRow(i, epicKey)).join("")}
+          ${rows}
         </tbody>
       </table>`;
   }
@@ -210,7 +238,7 @@ function buildEpicsSection(
             <ac:parameter ac:name="title">${escapeHtml(epic.status)}</ac:parameter>
           </ac:structured-macro>
         </h2>
-        ${jiraMacro(`key = ${epic.key}`, appLink)}
+        ${jiraMacroKey(epic.key, appLink)}
         ${storyTable(epic.issues, epic.key)}`;
     })
     .join("");
