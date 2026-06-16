@@ -228,16 +228,9 @@ function buildEpicsSection(
 
   const epicSections = epics
     .map((epic) => {
-      const color = statusColor(epic.status);
       return `
         ${separator}
-        <h2>
-          <a href="${issueUrl(epic.key)}">${escapeHtml(epic.key)}</a> – ${escapeHtml(epic.summary)}&nbsp;
-          <ac:structured-macro ac:name="status">
-            <ac:parameter ac:name="colour">${color}</ac:parameter>
-            <ac:parameter ac:name="title">${escapeHtml(epic.status)}</ac:parameter>
-          </ac:structured-macro>
-        </h2>
+        <h2>${escapeHtml(epic.key)} – ${escapeHtml(epic.summary)} (${escapeHtml(epic.status)})</h2>
         ${jiraMacroKey(epic.key, appLink)}
         ${storyTable(epic.issues, epic.key)}`;
     })
@@ -263,8 +256,6 @@ function buildDefectsSection(
 
   const rows = defects
     .map((issue) => {
-      const statusCol = statusColor(issue.fields.status.name);
-      const priColor = priorityColor(issue.fields.priority?.name);
       return `
         <tr>
           <td><a href="${issueUrl(issue.key)}">${issue.key}</a></td>
@@ -275,18 +266,8 @@ function buildDefectsSection(
           <td>${formatDateShort(issue.fields.duedate)}</td>
           <td>${escapeHtml(issue.fields.assignee?.displayName || "—")}</td>
           <td>${escapeHtml(issue.fields.reporter?.displayName || "—")}</td>
-          <td>
-            <ac:structured-macro ac:name="status">
-              <ac:parameter ac:name="colour">${priColor}</ac:parameter>
-              <ac:parameter ac:name="title">${escapeHtml(issue.fields.priority?.name || "—")}</ac:parameter>
-            </ac:structured-macro>
-          </td>
-          <td>
-            <ac:structured-macro ac:name="status">
-              <ac:parameter ac:name="colour">${statusCol}</ac:parameter>
-              <ac:parameter ac:name="title">${escapeHtml(issue.fields.status.name)}</ac:parameter>
-            </ac:structured-macro>
-          </td>
+          <td>${escapeHtml(issue.fields.priority?.name || "—")}</td>
+          <td>${escapeHtml(issue.fields.status.name)}</td>
           <td>${escapeHtml(issue.fields.resolution?.name || "Unresolved")}</td>
         </tr>`;
     })
@@ -326,24 +307,16 @@ function completionColor(ratio: string): string {
 }
 
 function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
-  const rows = capacityHistory
-    .map(
-      (c) => `
+  const c = capacityHistory[capacityHistory.length - 1];
+  if (!c) return "";
+
+  const row = `
     <tr>
       <td>${escapeHtml(c.sprintName)}</td>
       <td style="text-align:center;">${c.plannedPoints > 0 ? c.plannedPoints : "—"}</td>
       <td style="text-align:center;">${c.deliveredPoints > 0 ? c.deliveredPoints : "—"}</td>
-      <td style="text-align:center;">
-        ${c.completionRatio !== "N/A"
-          ? `<ac:structured-macro ac:name="status">
-              <ac:parameter ac:name="colour">${completionColor(c.completionRatio)}</ac:parameter>
-              <ac:parameter ac:name="title">${c.completionRatio}</ac:parameter>
-            </ac:structured-macro>`
-          : "—"}
-      </td>
-    </tr>`
-    )
-    .join("");
+      <td style="text-align:center;">${c.completionRatio !== "N/A" ? c.completionRatio : "—"}</td>
+    </tr>`;
 
   return `
     <h2>Sprint Report</h2>
@@ -360,7 +333,7 @@ function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
           <th><strong>Delivered Velocity (SP)</strong></th>
           <th><strong>Completion Ratio</strong></th>
         </tr>
-        ${rows}
+        ${row}
       </tbody>
     </table>`;
 }
