@@ -108,55 +108,15 @@ success "Dependencies installed"
 # ── Step 3: Config setup ─────────────────────────────────────
 step "Checking configuration"
 
-if [ ! -f "config.json" ]; then
-  if [ -f "config.example.json" ]; then
-    # Strip the _comment field before copying
-    if command -v node &>/dev/null; then
-      node -e "
-        const c = require('./config.example.json');
-        delete c._comment;
-        require('fs').writeFileSync('config.json', JSON.stringify(c, null, 2));
-      "
-    else
-      cp config.example.json config.json
-    fi
-    warn "Created config.json from template — fill in your credentials at the /config page"
-  else
-    cat > config.json <<'JSON'
-{
-  "jira": {
-    "baseUrl": "",
-    "email": "",
-    "apiToken": "",
-    "username": "",
-    "password": "",
-    "defaultProject": "",
-    "isCloud": false,
-    "serverAuthMode": "pat"
-  },
-  "confluence": {
-    "baseUrl": "",
-    "email": "",
-    "apiToken": "",
-    "username": "",
-    "password": "",
-    "spaceKey": "",
-    "parentPageId": ""
-  },
-  "teams": {
-    "defaultWebhookUrl": "",
-    "notifyChannel": "teams"
-  },
-  "alerts": {
-    "rules": [],
-    "pollIntervalMinutes": 15
-  }
-}
-JSON
-    warn "Created blank config.json — fill in your credentials at the /config page"
-  fi
+# Credentials are stored in ~/.jira-automation/config.json (outside the repo)
+# so git pull / re-clones can never overwrite them.
+CONFIG_STORE="$HOME/.jira-automation/config.json"
+
+if [ -f "$CONFIG_STORE" ]; then
+  success "Credentials found at ~/.jira-automation/config.json"
 else
-  success "config.json exists"
+  warn "No credentials yet — open the app and go to the Config page to set them up"
+  info "They will be saved to: $CONFIG_STORE"
 fi
 
 # ── Step 4: Pick a free port ─────────────────────────────────

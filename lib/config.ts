@@ -1,7 +1,15 @@
 import fs from "fs";
 import path from "path";
+import os from "os";
 
-const CONFIG_PATH = path.join(process.cwd(), "config.json");
+// ── Config location ───────────────────────────────────────────────────────────
+// Stored in the user's home directory so it survives git pull, re-clones,
+// npm ci, and any other repo operation. Never inside the project folder.
+const CONFIG_DIR  = path.join(os.homedir(), ".jira-automation");
+const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+
+// Legacy path (inside the project) — used only for one-time migration
+const LEGACY_CONFIG_PATH = path.join(process.cwd(), "config.json");
 
 export interface AlertRule {
   id: string;
@@ -75,20 +83,45 @@ const DEFAULT_CONFIG: AppConfig = {
   },
 };
 
+/** Deep-merge: fills in any missing keys from DEFAULT_CONFIG without overwriting user values */
+function deepMerge(defaults: AppConfig, saved: Partial<AppConfig>): AppConfig {
+  return {
+    jira:       { ...defaults.jira,       ...(saved.jira       ?? {}) },
+    confluence: { ...defaults.confluence, ...(saved.confluence ?? {}) },
+    teams:      { ...defaults.teams,      ...(saved.teams      ?? {}) },
+    alerts:     { ...defaults.alerts,     ...(saved.alerts     ?? {}) },
+  } as AppConfig;
+}
+
 export function readConfig(): AppConfig {
   try {
+    // One-time migration: if credentials exist in the old project-level path,
+    // copy them to the permanent home-directory location and remove the old file.
+    if (!fs.existsSync(CONFIG_PATH) && fs.existsSync(LEGACY_CONFIG_PATH)) {
+      try {
+        if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.copyFileSync(LEGACY_CONFIG_PATH, CONFIG_PATH);
+        // Leave the old file in place (gitignored) — don't delete it so the
+        // user isn't surprised, but from now on the home-dir copy is used.
+      } catch { /* ignore migration errors */ }
+    }
+
     if (!fs.existsSync(CONFIG_PATH)) {
       writeConfig(DEFAULT_CONFIG);
       return DEFAULT_CONFIG;
     }
     const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    return deepMerge(DEFAULT_CONFIG, JSON.parse(raw));
   } catch {
     return DEFAULT_CONFIG;
   }
 }
 
 export function writeConfig(config: AppConfig): void {
+  // Ensure ~/.jira-automation/ exists before writing
+  if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
 }
 
