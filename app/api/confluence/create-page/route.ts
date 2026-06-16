@@ -19,8 +19,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch all sprint data (epics, defects, capacity history)
-    const { sprint, epics, noEpic, defects, capacityHistory } = await getSprintReviewData(config, sprintId);
+    // Fetch all sprint data (epics, defects, capacity history, discovered field IDs)
+    const { sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId } = await getSprintReviewData(config, sprintId);
 
     // Build title and check if page already exists
     const d = sprint.endDate ? new Date(sprint.endDate) : new Date();
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
       const { data: pageData } = await confClient.get(`/rest/api/content/${existingId}?expand=version`);
       const result = await updateSprintReviewPage(
         config, existingId, pageData.version.number,
-        sprint, epics, noEpic, defects, capacityHistory
+        sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId
       );
       return NextResponse.json({
         success: true, url: result.url, updated: true, title,
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const result = await createSprintReviewPage(config, sprint, epics, noEpic, defects, capacityHistory);
+    const result = await createSprintReviewPage(config, sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId);
     return NextResponse.json({
       success: true, url: result.url, updated: false, title: result.title,
       epicCount: epics.length, issueCount: totalIssues,

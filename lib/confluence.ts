@@ -37,7 +37,13 @@ function formatTitleDate(iso: string): string {
 
 function statusColor(status: string): string {
   const s = status.toLowerCase();
-  if (s.includes("done") || s.includes("resolved") || s.includes("closed") || s.includes("won't fix"))
+  if (
+    s.includes("done") ||
+    s.includes("resolved") ||
+    s.includes("closed") ||
+    s.includes("won't fix") ||
+    s.includes("wont fix")
+  )
     return "Green";
   if (s.includes("progress") || s.includes("review")) return "Blue";
   if (s.includes("blocked") || s.includes("impediment")) return "Red";
@@ -53,20 +59,7 @@ function priorityColor(priority: string | undefined): string {
   return "Grey";
 }
 
-function shortDescription(desc: string | null): string {
-  if (!desc) return "";
-  if (typeof desc === "object") {
-    try {
-      const adf = desc as { content?: Array<{ content?: Array<{ text?: string }> }> };
-      return adf.content
-        ?.flatMap((b) => b.content?.map((i) => i.text || "") || [])
-        .join(" ").slice(0, 120) || "";
-    } catch { return ""; }
-  }
-  return String(desc).slice(0, 120);
-}
-
-function escapeHtml(str: string): string {
+function escapeHtml(str: string | null | undefined): string {
   if (!str) return "";
   return String(str)
     .replace(/&/g, "&amp;")
@@ -74,6 +67,16 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// ── Jira macro helper ─────────────────────────────────────────────────────────
+// Renders a Jira issue filter macro (auto-updates from Jira via the app link)
+function jiraMacro(jqlQuery: string): string {
+  return `
+    <ac:structured-macro ac:name="jira">
+      <ac:parameter ac:name="server">Jira</ac:parameter>
+      <ac:parameter ac:name="jqlQuery">${escapeHtml(jqlQuery)}</ac:parameter>
+    </ac:structured-macro>`;
 }
 
 // ── Section builders ──────────────────────────────────────────────────────────
@@ -95,42 +98,36 @@ function buildTimetable(sprint: JiraSprint): string {
 function buildEpicsSection(
   epics: JiraEpic[],
   noEpic: JiraIssue[],
-  issueUrl: (key: string) => string
+  issueUrl: (key: string) => string,
+  spFieldId?: string | null
 ): string {
   const separator = '<hr style="border-top: 3px dashed #bbb; margin: 24px 0;" />';
 
-  function storyRow(issue: JiraIssue): string {
-    const color = statusColor(issue.fields.status.name);
-    const pts = getStoryPoints(issue);
+  // Each story row: col1=Jira macro (key=STORY), col2=status, col3=summary/heading,
+  //                 col4=assignee, col5=SP, col6=All-issues Jira macro (Epic Link=EPIC)
+  function storyRow(issue: JiraIssue, epicKey: string | null): string {
+    const pts = getStoryPoints(issue, spFieldId);
+    const projectKey = issue.key.split("-")[0];
+    const allIssuesJql = epicKey
+      ? `project = ${projectKey} AND "Epic Link" = ${epicKey}`
+      : "";
     return `
       <tr>
-        <td>
-          <a href="${issueUrl(issue.key)}">${issue.key}</a><br/>
-          <span>${escapeHtml(issue.fields.summary)}</span><br/>
-          <ac:structured-macro ac:name="status">
-            <ac:parameter ac:name="colour">${color}</ac:parameter>
-            <ac:parameter ac:name="title">${escapeHtml(issue.fields.status.name)}</ac:parameter>
-          </ac:structured-macro>
-        </td>
+        <td>${jiraMacro(`key = ${issue.key}`)}</td>
         <td>${escapeHtml(issue.fields.status.name)}</td>
-        <td>${escapeHtml(shortDescription(issue.fields.description))}</td>
+        <td>${escapeHtml(issue.fields.summary)}</td>
         <td>${escapeHtml(issue.fields.assignee?.displayName || "Unassigned")}</td>
         <td style="text-align:center;">${pts > 0 ? pts : "—"}</td>
-        <td>
-          <ac:structured-macro ac:name="jira">
-            <ac:parameter ac:name="server">Jira</ac:parameter>
-            <ac:parameter ac:name="key">${issue.key}</ac:parameter>
-          </ac:structured-macro>
-        </td>
+        <td>${allIssuesJql ? jiraMacro(allIssuesJql) : ""}</td>
       </tr>`;
   }
 
-  function storyTable(issues: JiraIssue[]): string {
+  function storyTable(issues: JiraIssue[], epicKey: string | null): string {
     if (issues.length === 0) return "<p><em>No issues found.</em></p>";
     return `
       <table data-layout="wide">
         <colgroup>
-          <col style="width: 220px;" /><col style="width: 120px;" />
+          <col style="width: 200px;" /><col style="width: 120px;" />
           <col style="width: 250px;" /><col style="width: 120px;" />
           <col style="width: 60px;" /><col style="width: 280px;" />
         </colgroup>
@@ -143,28 +140,32 @@ function buildEpicsSection(
             <th><strong>SP</strong></th>
             <th><strong>All Issues</strong></th>
           </tr>
-          ${issues.map(storyRow).join("")}
+          ${issues.map((i) => storyRow(i, epicKey)).join("")}
         </tbody>
       </table>`;
   }
 
-  const epicSections = epics.map((epic) => {
-    const color = statusColor(epic.status);
-    return `
-      ${separator}
-      <h2>
-        <a href="${issueUrl(epic.key)}">${escapeHtml(epic.key)}</a> – ${escapeHtml(epic.summary)}&nbsp;
-        <ac:structured-macro ac:name="status">
-          <ac:parameter ac:name="colour">${color}</ac:parameter>
-          <ac:parameter ac:name="title">${escapeHtml(epic.status)}</ac:parameter>
-        </ac:structured-macro>
-      </h2>
-      ${storyTable(epic.issues)}`;
-  }).join("");
+  const epicSections = epics
+    .map((epic) => {
+      const color = statusColor(epic.status);
+      return `
+        ${separator}
+        <h2>
+          <a href="${issueUrl(epic.key)}">${escapeHtml(epic.key)}</a> – ${escapeHtml(epic.summary)}&nbsp;
+          <ac:structured-macro ac:name="status">
+            <ac:parameter ac:name="colour">${color}</ac:parameter>
+            <ac:parameter ac:name="title">${escapeHtml(epic.status)}</ac:parameter>
+          </ac:structured-macro>
+        </h2>
+        ${jiraMacro(`key = ${epic.key}`)}
+        ${storyTable(epic.issues, epic.key)}`;
+    })
+    .join("");
 
-  const noEpicSection = noEpic.length > 0
-    ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(noEpic)}`
-    : "";
+  const noEpicSection =
+    noEpic.length > 0
+      ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(noEpic, null)}`
+      : "";
 
   return epicSections + noEpicSection;
 }
@@ -179,34 +180,36 @@ function buildDefectsSection(
       <p><em>No defects found in this sprint. 🎉</em></p>`;
   }
 
-  const rows = defects.map((issue) => {
-    const statusCol = statusColor(issue.fields.status.name);
-    const priColor = priorityColor(issue.fields.priority?.name);
-    return `
-      <tr>
-        <td><a href="${issueUrl(issue.key)}">${issue.key}</a></td>
-        <td>${escapeHtml(issue.fields.summary)}</td>
-        <td>${escapeHtml(issue.fields.issuetype.name)}</td>
-        <td>${formatDateShort(issue.fields.created)}</td>
-        <td>${formatDateShort(issue.fields.updated)}</td>
-        <td>${formatDateShort(issue.fields.duedate)}</td>
-        <td>${escapeHtml(issue.fields.assignee?.displayName || "—")}</td>
-        <td>${escapeHtml(issue.fields.reporter?.displayName || "—")}</td>
-        <td>
-          <ac:structured-macro ac:name="status">
-            <ac:parameter ac:name="colour">${priColor}</ac:parameter>
-            <ac:parameter ac:name="title">${escapeHtml(issue.fields.priority?.name || "—")}</ac:parameter>
-          </ac:structured-macro>
-        </td>
-        <td>
-          <ac:structured-macro ac:name="status">
-            <ac:parameter ac:name="colour">${statusCol}</ac:parameter>
-            <ac:parameter ac:name="title">${escapeHtml(issue.fields.status.name)}</ac:parameter>
-          </ac:structured-macro>
-        </td>
-        <td>${escapeHtml(issue.fields.resolution?.name || "Unresolved")}</td>
-      </tr>`;
-  }).join("");
+  const rows = defects
+    .map((issue) => {
+      const statusCol = statusColor(issue.fields.status.name);
+      const priColor = priorityColor(issue.fields.priority?.name);
+      return `
+        <tr>
+          <td><a href="${issueUrl(issue.key)}">${issue.key}</a></td>
+          <td>${escapeHtml(issue.fields.summary)}</td>
+          <td>${escapeHtml(issue.fields.issuetype.name)}</td>
+          <td>${formatDateShort(issue.fields.created)}</td>
+          <td>${formatDateShort(issue.fields.updated)}</td>
+          <td>${formatDateShort(issue.fields.duedate)}</td>
+          <td>${escapeHtml(issue.fields.assignee?.displayName || "—")}</td>
+          <td>${escapeHtml(issue.fields.reporter?.displayName || "—")}</td>
+          <td>
+            <ac:structured-macro ac:name="status">
+              <ac:parameter ac:name="colour">${priColor}</ac:parameter>
+              <ac:parameter ac:name="title">${escapeHtml(issue.fields.priority?.name || "—")}</ac:parameter>
+            </ac:structured-macro>
+          </td>
+          <td>
+            <ac:structured-macro ac:name="status">
+              <ac:parameter ac:name="colour">${statusCol}</ac:parameter>
+              <ac:parameter ac:name="title">${escapeHtml(issue.fields.status.name)}</ac:parameter>
+            </ac:structured-macro>
+          </td>
+          <td>${escapeHtml(issue.fields.resolution?.name || "Unresolved")}</td>
+        </tr>`;
+    })
+    .join("");
 
   return `
     <h2>Defects</h2>
@@ -238,20 +241,35 @@ function buildDefectsSection(
     </table>`;
 }
 
+function completionColor(ratio: string): string {
+  const n = parseInt(ratio);
+  if (isNaN(n)) return "Grey";
+  if (n >= 80) return "Green";
+  if (n >= 60) return "Yellow";
+  return "Red";
+}
+
 function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
-  const rows = capacityHistory.map((c) => `
+  const rows = capacityHistory
+    .map(
+      (c) => `
     <tr>
       <td>${escapeHtml(c.sprintName)}</td>
       <td style="text-align:center;">${c.plannedPoints > 0 ? c.plannedPoints : "—"}</td>
       <td style="text-align:center;">${c.deliveredPoints > 0 ? c.deliveredPoints : "—"}</td>
       <td style="text-align:center;">
-        ${c.completionRatio !== "N/A" ? `
-          <ac:structured-macro ac:name="status">
+        ${
+          c.completionRatio !== "N/A"
+            ? `<ac:structured-macro ac:name="status">
             <ac:parameter ac:name="colour">${completionColor(c.completionRatio)}</ac:parameter>
             <ac:parameter ac:name="title">${c.completionRatio}</ac:parameter>
-          </ac:structured-macro>` : "—"}
+          </ac:structured-macro>`
+            : "—"
+        }
       </td>
-    </tr>`).join("");
+    </tr>`
+    )
+    .join("");
 
   return `
     <h2>Sprint Report</h2>
@@ -273,14 +291,6 @@ function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
     </table>`;
 }
 
-function completionColor(ratio: string): string {
-  const n = parseInt(ratio);
-  if (isNaN(n)) return "Grey";
-  if (n >= 80) return "Green";
-  if (n >= 60) return "Yellow";
-  return "Red";
-}
-
 // ── Main page builder ─────────────────────────────────────────────────────────
 
 export function buildSprintReviewStorageFormat(
@@ -289,14 +299,15 @@ export function buildSprintReviewStorageFormat(
   noEpic: JiraIssue[],
   defects: JiraIssue[],
   capacityHistory: SprintCapacity[],
-  jiraBaseUrl: string
+  jiraBaseUrl: string,
+  storyPointsFieldId?: string | null
 ): string {
   const issueUrl = (key: string) => `${jiraBaseUrl}/browse/${key}`;
   const sep = '<hr style="border-top: 2px solid #ddd; margin: 32px 0;" />';
 
   return `
     ${buildTimetable(sprint)}
-    ${buildEpicsSection(epics, noEpic, issueUrl)}
+    ${buildEpicsSection(epics, noEpic, issueUrl, storyPointsFieldId)}
     ${sep}
     ${buildDefectsSection(defects, issueUrl)}
     ${sep}
@@ -306,19 +317,36 @@ export function buildSprintReviewStorageFormat(
 
 // ── Confluence API calls ──────────────────────────────────────────────────────
 
+/**
+ * Resolve the correct Confluence page URL from the API response's _links.
+ * This avoids hardcoding /wiki/ which may or may not be present on a given instance.
+ */
+function resolvePageUrl(
+  data: { id: string; _links?: { base?: string; webui?: string } },
+  config: AppConfig
+): string {
+  if (data._links?.base && data._links?.webui) {
+    return `${data._links.base}${data._links.webui}`;
+  }
+  // Fallback: construct from config base URL (no /wiki prefix)
+  return `${config.confluence.baseUrl}/spaces/${config.confluence.spaceKey}/pages/${data.id}`;
+}
+
 export async function createSprintReviewPage(
   config: AppConfig,
   sprint: JiraSprint,
   epics: JiraEpic[],
   noEpic: JiraIssue[],
   defects: JiraIssue[],
-  capacityHistory: SprintCapacity[]
+  capacityHistory: SprintCapacity[],
+  storyPointsFieldId?: string | null
 ): Promise<{ url: string; pageId: string; title: string }> {
   const client = confluenceClient(config);
   const title = `${formatTitleDate(sprint.endDate)} -> ${sprint.name} Review`;
 
   const storageContent = buildSprintReviewStorageFormat(
-    sprint, epics, noEpic, defects, capacityHistory, config.jira.baseUrl
+    sprint, epics, noEpic, defects, capacityHistory,
+    config.jira.baseUrl, storyPointsFieldId
   );
 
   const { data } = await client.post("/rest/api/content", {
@@ -332,7 +360,7 @@ export async function createSprintReviewPage(
   });
 
   return {
-    url: `${config.confluence.baseUrl}/wiki/spaces/${config.confluence.spaceKey}/pages/${data.id}`,
+    url: resolvePageUrl(data, config),
     pageId: data.id,
     title,
   };
@@ -357,26 +385,26 @@ export async function updateSprintReviewPage(
   epics: JiraEpic[],
   noEpic: JiraIssue[],
   defects: JiraIssue[],
-  capacityHistory: SprintCapacity[]
+  capacityHistory: SprintCapacity[],
+  storyPointsFieldId?: string | null
 ): Promise<{ url: string }> {
   const client = confluenceClient(config);
   const title = `${formatTitleDate(sprint.endDate)} -> ${sprint.name} Review`;
 
-  await client.put(`/rest/api/content/${pageId}`, {
+  const { data } = await client.put(`/rest/api/content/${pageId}`, {
     version: { number: version + 1 },
     type: "page",
     title,
     body: {
       storage: {
         value: buildSprintReviewStorageFormat(
-          sprint, epics, noEpic, defects, capacityHistory, config.jira.baseUrl
+          sprint, epics, noEpic, defects, capacityHistory,
+          config.jira.baseUrl, storyPointsFieldId
         ),
         representation: "storage",
       },
     },
   });
 
-  return {
-    url: `${config.confluence.baseUrl}/wiki/spaces/${config.confluence.spaceKey}/pages/${pageId}`,
-  };
+  return { url: resolvePageUrl(data, config) };
 }

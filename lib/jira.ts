@@ -13,17 +13,19 @@ export interface JiraIssue {
     description: string | null;
     // Epic link fields
     parent?: { key: string; fields: { summary: string } };
-    customfield_10014?: string; // Epic Link (Server)
-    customfield_10008?: string; // Epic Link (older Server)
+    customfield_10014?: string; // Epic Link (Server fallback)
+    customfield_10008?: string; // Epic Link (older Server fallback)
     priority?: { name: string };
     resolution?: { name: string } | null;
     duedate?: string | null;
     created: string;
     updated: string;
-    // Story points — field name varies by instance
+    // Story points — field name varies by instance (fallbacks)
     customfield_10016?: number | null;
     customfield_10028?: number | null;
     customfield_10004?: number | null;
+    // Allow dynamic custom field access for instance-specific fields
+    [key: string]: unknown;
   };
 }
 
@@ -52,27 +54,83 @@ export interface SprintCapacity {
   completionRatio: string; // e.g. "72%"
 }
 
-// Extract story points from an issue — tries all known custom field names
-export function getStoryPoints(issue: JiraIssue): number {
-  return Number(
-    issue.fields.customfield_10016 ??
-    issue.fields.customfield_10028 ??
-    issue.fields.customfield_10004 ??
-    0
-  ) || 0;
+export interface JiraFieldMeta {
+  epicLinkFieldId: string | null;
+  storyPointsFieldId: string | null;
+}
+
+// ── Field discovery ───────────────────────────────────────────────────────────
+
+/**
+ * Fetches all Jira field definitions and returns the custom field IDs for
+ * "Epic Link" and "Story Points" as used by this specific Jira instance.
+ * Fails gracefully — returns nulls if the API call fails.
+ */
+export async function discoverJiraFields(config: AppConfig): Promise<JiraFieldMeta> {
+  try {
+    const client = jiraClient(config);
+    const { data } = await client.get("/rest/api/2/field");
+    let epicLinkFieldId: string | null = null;
+    let storyPointsFieldId: string | null = null;
+
+    for (const field of data as Array<{ id: string; name: string }>) {
+      const name = field.name.toLowerCase();
+      if (name === "epic link" && !epicLinkFieldId) {
+        epicLinkFieldId = field.id;
+      }
+      if (
+        (name === "story points" || name === "story point estimate") &&
+        !storyPointsFieldId
+      ) {
+        storyPointsFieldId = field.id;
+      }
+    }
+    return { epicLinkFieldId, storyPointsFieldId };
+  } catch {
+    return { epicLinkFieldId: null, storyPointsFieldId: null };
+  }
+}
+
+// ── Story points helpers ──────────────────────────────────────────────────────
+
+/**
+ * Extract story points from an issue.
+ * Tries the discovered field ID first, then well-known fallback field names.
+ */
+export function getStoryPoints(issue: JiraIssue, spFieldId?: string | null): number {
+  if (spFieldId) {
+    const val = Number(issue.fields[spFieldId]);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return (
+    Number(
+      issue.fields.customfield_10016 ??
+      issue.fields.customfield_10028 ??
+      issue.fields.customfield_10004 ??
+      0
+    ) || 0
+  );
 }
 
 // True if the issue is considered "done" for capacity purposes
 function isDone(issue: JiraIssue): boolean {
   const s = issue.fields.status.name.toLowerCase();
-  return s === "done" || s === "resolved" || s === "closed" || s === "won't fix";
+  return (
+    s === "done" ||
+    s === "resolved" ||
+    s === "closed" ||
+    s === "won't fix" ||
+    s === "wont fix"
+  );
 }
 
-// True if the issue is a defect/bug type
+// True if the issue is a defect/bug type (used for web UI preview)
 export function isDefect(issue: JiraIssue): boolean {
   const t = issue.fields.issuetype.name.toLowerCase();
   return t.includes("bug") || t.includes("defect");
 }
+
+// ── Jira client ───────────────────────────────────────────────────────────────
 
 function jiraClient(config: AppConfig) {
   return axios.create({
@@ -85,7 +143,8 @@ function jiraClient(config: AppConfig) {
   });
 }
 
-// Fetch sprint metadata
+// ── Sprint data fetchers ──────────────────────────────────────────────────────
+
 export async function getSprint(
   config: AppConfig,
   sprintId: string
@@ -95,32 +154,33 @@ export async function getSprint(
   return data;
 }
 
-// Fetch all issues in a sprint (handles pagination)
+/**
+ * Fetch all issues in a sprint (handles pagination).
+ * extraFields: additional custom field IDs to include (e.g. discovered epic link / SP fields).
+ */
 export async function getSprintIssues(
   config: AppConfig,
-  sprintId: string
+  sprintId: string,
+  extraFields: string[] = []
 ): Promise<JiraIssue[]> {
   const client = jiraClient(config);
   const allIssues: JiraIssue[] = [];
   let startAt = 0;
   const maxResults = 50;
 
+  const baseFields = [
+    "summary", "status", "issuetype", "assignee", "reporter",
+    "description", "parent",
+    "customfield_10014", "customfield_10008", // Epic Link fallbacks
+    "customfield_10016", "customfield_10028", "customfield_10004", // Story Points fallbacks
+    "priority", "resolution", "duedate", "created", "updated",
+  ];
+  const fieldList = [...new Set([...baseFields, ...extraFields])].join(",");
+
   while (true) {
     const { data } = await client.get(
       `/rest/agile/1.0/sprint/${sprintId}/issue`,
-      {
-        params: {
-          startAt,
-          maxResults,
-          fields: [
-            "summary", "status", "issuetype", "assignee", "reporter",
-            "description", "parent",
-            "customfield_10014", "customfield_10008", // Epic Link
-            "customfield_10016", "customfield_10028", "customfield_10004", // Story Points
-            "priority", "resolution", "duedate", "created", "updated",
-          ].join(","),
-        },
-      }
+      { params: { startAt, maxResults, fields: fieldList } }
     );
     allIssues.push(...data.issues);
     if (allIssues.length >= data.total) break;
@@ -128,6 +188,38 @@ export async function getSprintIssues(
   }
 
   return allIssues;
+}
+
+/**
+ * Fetch defects for a sprint via JQL — more reliable than filtering from sprint
+ * issues since some Jira configurations exclude certain issue types from sprint views.
+ */
+export async function getDefectsByJQL(
+  config: AppConfig,
+  sprintId: string,
+  spFieldId?: string | null
+): Promise<JiraIssue[]> {
+  const client = jiraClient(config);
+  const jql = `issuetype in (Defect, Bug) AND Sprint = ${sprintId} ORDER BY created DESC`;
+  const fields = [
+    "summary", "status", "issuetype", "assignee", "reporter",
+    "priority", "resolution", "duedate", "created", "updated",
+    "customfield_10016", "customfield_10028", "customfield_10004",
+    ...(spFieldId ? [spFieldId] : []),
+  ];
+  try {
+    const { data } = await client.get("/rest/api/2/search", {
+      params: {
+        jql,
+        maxResults: 200,
+        fields: [...new Set(fields)].join(","),
+      },
+    });
+    return data.issues || [];
+  } catch {
+    // Fallback: no defects (permission issue or no Defect issuetype)
+    return [];
+  }
 }
 
 // Fetch epic details by key
@@ -146,17 +238,23 @@ export async function getEpic(
   };
 }
 
-// Compute capacity for a single sprint from its issues
-function calcCapacity(sprintMeta: JiraSprint, issues: JiraIssue[]): SprintCapacity {
+// ── Capacity ──────────────────────────────────────────────────────────────────
+
+function calcCapacity(
+  sprintMeta: JiraSprint,
+  issues: JiraIssue[],
+  spFieldId?: string | null
+): SprintCapacity {
   const nonEpicIssues = issues.filter(
     (i) => i.fields.issuetype.name !== "Epic"
   );
   const plannedPoints = nonEpicIssues.reduce(
-    (sum, i) => sum + getStoryPoints(i), 0
+    (sum, i) => sum + getStoryPoints(i, spFieldId),
+    0
   );
   const deliveredPoints = nonEpicIssues
     .filter(isDone)
-    .reduce((sum, i) => sum + getStoryPoints(i), 0);
+    .reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
   const ratio =
     plannedPoints > 0
       ? Math.round((deliveredPoints / plannedPoints) * 100) + "%"
@@ -171,19 +269,16 @@ function calcCapacity(sprintMeta: JiraSprint, issues: JiraIssue[]): SprintCapaci
   };
 }
 
-// Fetch capacity history: current sprint + last N closed sprints from same board
 export async function getCapacityHistory(
   config: AppConfig,
   currentSprint: JiraSprint,
   currentIssues: JiraIssue[],
-  historyCount = 5
+  historyCount = 5,
+  spFieldId?: string | null
 ): Promise<SprintCapacity[]> {
   const client = jiraClient(config);
+  const currentCapacity = calcCapacity(currentSprint, currentIssues, spFieldId);
 
-  // Capacity for the sprint being reviewed
-  const currentCapacity = calcCapacity(currentSprint, currentIssues);
-
-  // Try to get historical sprints from the same board
   const boardId = currentSprint.originBoardId;
   if (!boardId) return [currentCapacity];
 
@@ -191,29 +286,22 @@ export async function getCapacityHistory(
   try {
     const { data } = await client.get(
       `/rest/agile/1.0/board/${boardId}/sprint`,
-      {
-        params: {
-          state: "closed",
-          maxResults: historyCount + 1, // fetch one extra in case current is included
-        },
-      }
+      { params: { state: "closed", maxResults: historyCount + 1 } }
     );
-    // Exclude the current sprint and take the most recent N
     pastSprints = (data.values as JiraSprint[])
       .filter((s) => s.id !== currentSprint.id)
       .slice(-historyCount)
-      .reverse(); // most recent first
+      .reverse();
   } catch {
-    // Board access may be restricted — just return current sprint only
     return [currentCapacity];
   }
 
-  // Fetch issues for each past sprint (lightweight: only story points + status)
   const pastCapacities = await Promise.all(
     pastSprints.map(async (sprint) => {
       try {
-        const issues = await getSprintIssues(config, String(sprint.id));
-        return calcCapacity(sprint, issues);
+        const extraFields = spFieldId ? [spFieldId] : [];
+        const issues = await getSprintIssues(config, String(sprint.id), extraFields);
+        return calcCapacity(sprint, issues, spFieldId);
       } catch {
         return {
           sprintId: sprint.id,
@@ -226,11 +314,11 @@ export async function getCapacityHistory(
     })
   );
 
-  // Return oldest → newest, with current sprint last
   return [...pastCapacities.reverse(), currentCapacity];
 }
 
-// Group sprint issues by epic + collect defects + compute capacity
+// ── Main aggregator ───────────────────────────────────────────────────────────
+
 export async function getSprintReviewData(
   config: AppConfig,
   sprintId: string
@@ -240,24 +328,32 @@ export async function getSprintReviewData(
   noEpic: JiraIssue[];
   defects: JiraIssue[];
   capacityHistory: SprintCapacity[];
+  storyPointsFieldId: string | null;
 }> {
+  // Discover which custom fields carry "Epic Link" and "Story Points" in this instance
+  const { epicLinkFieldId, storyPointsFieldId } = await discoverJiraFields(config);
+
+  const extraFields = [epicLinkFieldId, storyPointsFieldId].filter(
+    Boolean
+  ) as string[];
+
   const [sprint, issues] = await Promise.all([
     getSprint(config, sprintId),
-    getSprintIssues(config, sprintId),
+    getSprintIssues(config, sprintId, extraFields),
   ]);
 
   const epicMap = new Map<string, JiraIssue[]>();
   const noEpic: JiraIssue[] = [];
-  const defects: JiraIssue[] = [];
 
   for (const issue of issues) {
     if (issue.fields.issuetype.name === "Epic") continue;
 
-    // Collect defects separately (they also appear under their epic below)
-    if (isDefect(issue)) defects.push(issue);
-
-    const epicKey =
+    // Try to find epic key: parent hierarchy → discovered epic link field → fallback fields
+    const epicKey: string | null =
       issue.fields.parent?.key ||
+      (epicLinkFieldId
+        ? (issue.fields[epicLinkFieldId] as string | undefined) || null
+        : null) ||
       issue.fields.customfield_10014 ||
       issue.fields.customfield_10008 ||
       null;
@@ -285,13 +381,23 @@ export async function getSprintReviewData(
     issues: epicMap.get(epic.key) || [],
   }));
 
-  // Capacity history (best-effort)
-  const capacityHistory = await getCapacityHistory(config, sprint, issues);
+  // Fetch defects via dedicated JQL (more reliable than filtering sprint issues)
+  const defects = await getDefectsByJQL(config, sprintId, storyPointsFieldId);
 
-  return { sprint, epics, noEpic, defects, capacityHistory };
+  // Capacity: current sprint + last N closed sprints from same board
+  const capacityHistory = await getCapacityHistory(
+    config,
+    sprint,
+    issues,
+    5,
+    storyPointsFieldId
+  );
+
+  return { sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId };
 }
 
-// Search for new issues since a given time — used for Teams alerts polling
+// ── Alert helpers ─────────────────────────────────────────────────────────────
+
 export async function searchNewIssues(
   config: AppConfig,
   rule: { issueTypes: string[]; assignees: string[]; project?: string },
