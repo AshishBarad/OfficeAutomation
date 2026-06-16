@@ -13,6 +13,55 @@ function confluenceClient(config: AppConfig) {
   });
 }
 
+// ── Jira Application Link auto-detection ─────────────────────────────────────
+
+export interface JiraAppLink {
+  /** Display name of the Jira application link in Confluence, e.g. "BMW Group Jira" */
+  serverName: string;
+  /** UUID of the application link, required by Confluence macros */
+  serverId: string;
+}
+
+/**
+ * Fetch the Jira application link registered in Confluence.
+ * Matches by Jira base URL hostname so it works for any Confluence instance.
+ * Falls back to empty strings if the AppLinks API is inaccessible.
+ */
+export async function fetchJiraAppLink(config: AppConfig): Promise<JiraAppLink> {
+  try {
+    const client = confluenceClient(config);
+    const { data } = await client.get("/rest/applinks/1.0/listApplicationlinks");
+
+    // Response may be an array or { list: [...] } depending on Confluence version
+    const links: Record<string, string>[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.list)
+      ? data.list
+      : [];
+
+    const jiraHostname = (() => {
+      try { return new URL(config.jira.baseUrl).hostname; } catch { return ""; }
+    })();
+
+    // Match by hostname of Jira base URL, or by application type containing "jira"
+    const match = links.find(
+      (link) =>
+        (link.rpcUrl && jiraHostname && link.rpcUrl.includes(jiraHostname)) ||
+        (link.displayUrl && jiraHostname && link.displayUrl.includes(jiraHostname)) ||
+        (link.typeId && link.typeId.toLowerCase().includes("jira"))
+    );
+
+    if (match) {
+      return { serverName: match.name || "", serverId: match.id || "" };
+    }
+  } catch {
+    // AppLinks API may require admin rights — fail silently
+  }
+  return { serverName: "", serverId: "" };
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
 function formatDate(iso: string): string {
   if (!iso) return "N/A";
   return new Date(iso).toLocaleDateString("en-GB", {
@@ -38,13 +87,9 @@ function formatTitleDate(iso: string): string {
 function statusColor(status: string): string {
   const s = status.toLowerCase();
   if (
-    s.includes("done") ||
-    s.includes("resolved") ||
-    s.includes("closed") ||
-    s.includes("won't fix") ||
-    s.includes("wont fix")
-  )
-    return "Green";
+    s.includes("done") || s.includes("resolved") || s.includes("closed") ||
+    s.includes("won't fix") || s.includes("wont fix")
+  ) return "Green";
   if (s.includes("progress") || s.includes("review")) return "Blue";
   if (s.includes("blocked") || s.includes("impediment")) return "Red";
   return "Grey";
@@ -69,12 +114,21 @@ function escapeHtml(str: string | null | undefined): string {
     .replace(/'/g, "&#39;");
 }
 
-// ── Jira macro helper ─────────────────────────────────────────────────────────
-// Renders a Jira issue filter macro (auto-updates from Jira via the app link)
-function jiraMacro(jqlQuery: string): string {
-  return `
-    <ac:structured-macro ac:name="jira">
-      <ac:parameter ac:name="server">Jira</ac:parameter>
+// ── Jira macro ────────────────────────────────────────────────────────────────
+
+/**
+ * Generates a Jira Issue/Filter macro with the correct server name and serverId.
+ * Both are needed on Confluence Server/DC — without serverId you get
+ * "Unable to locate Jira server for this macro".
+ */
+function jiraMacro(jqlQuery: string, appLink: JiraAppLink): string {
+  const serverParam = appLink.serverName
+    ? `\n      <ac:parameter ac:name="server">${escapeHtml(appLink.serverName)}</ac:parameter>`
+    : "";
+  const serverIdParam = appLink.serverId
+    ? `\n      <ac:parameter ac:name="serverId">${escapeHtml(appLink.serverId)}</ac:parameter>`
+    : "";
+  return `<ac:structured-macro ac:name="jira">${serverParam}${serverIdParam}
       <ac:parameter ac:name="jqlQuery">${escapeHtml(jqlQuery)}</ac:parameter>
     </ac:structured-macro>`;
 }
@@ -99,12 +153,11 @@ function buildEpicsSection(
   epics: JiraEpic[],
   noEpic: JiraIssue[],
   issueUrl: (key: string) => string,
+  appLink: JiraAppLink,
   spFieldId?: string | null
 ): string {
   const separator = '<hr style="border-top: 3px dashed #bbb; margin: 24px 0;" />';
 
-  // Each story row: col1=Jira macro (key=STORY), col2=status, col3=summary/heading,
-  //                 col4=assignee, col5=SP, col6=All-issues Jira macro (Epic Link=EPIC)
   function storyRow(issue: JiraIssue, epicKey: string | null): string {
     const pts = getStoryPoints(issue, spFieldId);
     const projectKey = issue.key.split("-")[0];
@@ -113,12 +166,12 @@ function buildEpicsSection(
       : "";
     return `
       <tr>
-        <td>${jiraMacro(`key = ${issue.key}`)}</td>
+        <td>${jiraMacro(`key = ${issue.key}`, appLink)}</td>
         <td>${escapeHtml(issue.fields.status.name)}</td>
         <td>${escapeHtml(issue.fields.summary)}</td>
         <td>${escapeHtml(issue.fields.assignee?.displayName || "Unassigned")}</td>
         <td style="text-align:center;">${pts > 0 ? pts : "—"}</td>
-        <td>${allIssuesJql ? jiraMacro(allIssuesJql) : ""}</td>
+        <td>${allIssuesJql ? jiraMacro(allIssuesJql, appLink) : ""}</td>
       </tr>`;
   }
 
@@ -157,7 +210,7 @@ function buildEpicsSection(
             <ac:parameter ac:name="title">${escapeHtml(epic.status)}</ac:parameter>
           </ac:structured-macro>
         </h2>
-        ${jiraMacro(`key = ${epic.key}`)}
+        ${jiraMacro(`key = ${epic.key}`, appLink)}
         ${storyTable(epic.issues, epic.key)}`;
     })
     .join("");
@@ -224,16 +277,11 @@ function buildDefectsSection(
       </colgroup>
       <tbody>
         <tr>
-          <th><strong>Key</strong></th>
-          <th><strong>Summary</strong></th>
-          <th><strong>Type</strong></th>
-          <th><strong>Created</strong></th>
-          <th><strong>Updated</strong></th>
-          <th><strong>Due</strong></th>
-          <th><strong>Assignee</strong></th>
-          <th><strong>Reporter</strong></th>
-          <th><strong>Priority</strong></th>
-          <th><strong>Status</strong></th>
+          <th><strong>Key</strong></th><th><strong>Summary</strong></th>
+          <th><strong>Type</strong></th><th><strong>Created</strong></th>
+          <th><strong>Updated</strong></th><th><strong>Due</strong></th>
+          <th><strong>Assignee</strong></th><th><strong>Reporter</strong></th>
+          <th><strong>Priority</strong></th><th><strong>Status</strong></th>
           <th><strong>Resolution</strong></th>
         </tr>
         ${rows}
@@ -258,14 +306,12 @@ function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
       <td style="text-align:center;">${c.plannedPoints > 0 ? c.plannedPoints : "—"}</td>
       <td style="text-align:center;">${c.deliveredPoints > 0 ? c.deliveredPoints : "—"}</td>
       <td style="text-align:center;">
-        ${
-          c.completionRatio !== "N/A"
-            ? `<ac:structured-macro ac:name="status">
-            <ac:parameter ac:name="colour">${completionColor(c.completionRatio)}</ac:parameter>
-            <ac:parameter ac:name="title">${c.completionRatio}</ac:parameter>
-          </ac:structured-macro>`
-            : "—"
-        }
+        ${c.completionRatio !== "N/A"
+          ? `<ac:structured-macro ac:name="status">
+              <ac:parameter ac:name="colour">${completionColor(c.completionRatio)}</ac:parameter>
+              <ac:parameter ac:name="title">${c.completionRatio}</ac:parameter>
+            </ac:structured-macro>`
+          : "—"}
       </td>
     </tr>`
     )
@@ -300,6 +346,7 @@ export function buildSprintReviewStorageFormat(
   defects: JiraIssue[],
   capacityHistory: SprintCapacity[],
   jiraBaseUrl: string,
+  appLink: JiraAppLink,
   storyPointsFieldId?: string | null
 ): string {
   const issueUrl = (key: string) => `${jiraBaseUrl}/browse/${key}`;
@@ -307,7 +354,7 @@ export function buildSprintReviewStorageFormat(
 
   return `
     ${buildTimetable(sprint)}
-    ${buildEpicsSection(epics, noEpic, issueUrl, storyPointsFieldId)}
+    ${buildEpicsSection(epics, noEpic, issueUrl, appLink, storyPointsFieldId)}
     ${sep}
     ${buildDefectsSection(defects, issueUrl)}
     ${sep}
@@ -315,12 +362,8 @@ export function buildSprintReviewStorageFormat(
   `;
 }
 
-// ── Confluence API calls ──────────────────────────────────────────────────────
+// ── URL resolver ──────────────────────────────────────────────────────────────
 
-/**
- * Resolve the correct Confluence page URL from the API response's _links.
- * This avoids hardcoding /wiki/ which may or may not be present on a given instance.
- */
 function resolvePageUrl(
   data: { id: string; _links?: { base?: string; webui?: string } },
   config: AppConfig
@@ -328,9 +371,10 @@ function resolvePageUrl(
   if (data._links?.base && data._links?.webui) {
     return `${data._links.base}${data._links.webui}`;
   }
-  // Fallback: construct from config base URL (no /wiki prefix)
   return `${config.confluence.baseUrl}/spaces/${config.confluence.spaceKey}/pages/${data.id}`;
 }
+
+// ── Confluence API calls ──────────────────────────────────────────────────────
 
 export async function createSprintReviewPage(
   config: AppConfig,
@@ -344,9 +388,12 @@ export async function createSprintReviewPage(
   const client = confluenceClient(config);
   const title = `${formatTitleDate(sprint.endDate)} -> ${sprint.name} Review`;
 
+  // Fetch the Jira application link name + serverId from Confluence
+  const appLink = await fetchJiraAppLink(config);
+
   const storageContent = buildSprintReviewStorageFormat(
     sprint, epics, noEpic, defects, capacityHistory,
-    config.jira.baseUrl, storyPointsFieldId
+    config.jira.baseUrl, appLink, storyPointsFieldId
   );
 
   const { data } = await client.post("/rest/api/content", {
@@ -391,6 +438,9 @@ export async function updateSprintReviewPage(
   const client = confluenceClient(config);
   const title = `${formatTitleDate(sprint.endDate)} -> ${sprint.name} Review`;
 
+  // Fetch the Jira application link name + serverId from Confluence
+  const appLink = await fetchJiraAppLink(config);
+
   const { data } = await client.put(`/rest/api/content/${pageId}`, {
     version: { number: version + 1 },
     type: "page",
@@ -399,7 +449,7 @@ export async function updateSprintReviewPage(
       storage: {
         value: buildSprintReviewStorageFormat(
           sprint, epics, noEpic, defects, capacityHistory,
-          config.jira.baseUrl, storyPointsFieldId
+          config.jira.baseUrl, appLink, storyPointsFieldId
         ),
         representation: "storage",
       },
