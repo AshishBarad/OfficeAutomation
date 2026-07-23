@@ -1,6 +1,6 @@
 import axios from "axios";
 import { AppConfig, getConfluenceAuthHeader } from "./config";
-import { JiraEpic, JiraIssue, JiraSprint, SprintCapacity, getStoryPoints } from "./jira";
+import { JiraEpic, JiraIssue, JiraStory, JiraSprint, SprintCapacity, getStoryPoints } from "./jira";
 
 function confluenceClient(config: AppConfig) {
   return axios.create({
@@ -175,41 +175,80 @@ function buildEpicsSection(
 ): string {
   const separator = '<hr style="border-top: 3px dashed #bbb; margin: 24px 0;" />';
 
-  function storyTable(issues: JiraIssue[], epicKey: string | null, sprintId?: string | number): string {
-    if (issues.length === 0) return "<p><em>No issues found.</em></p>";
+  // Total HTML rows = sum of (1 story + N tasks) for each story, plus orphans
+  function totalRows(stories: JiraStory[], orphans: JiraIssue[]): number {
+    return stories.reduce((s, st) => s + 1 + st.subIssues.length, 0) + orphans.length;
+  }
 
-    // Build the "All Issues" filter cell — scoped to sprint issues only, merged via rowspan
-    const sprintIssueKeys = issues.map((i) => i.key).join(", ");
-    // JQL: only issues actually taken into this sprint
+  function storyTable(
+    stories: JiraStory[],
+    orphanIssues: JiraIssue[],
+    epicKey: string | null,
+    sprintId?: string | number
+  ): string {
+    if (stories.length === 0 && orphanIssues.length === 0)
+      return "<p><em>No issues found.</em></p>";
+
     const allIssuesJql = sprintId
-      ? `Sprint = ${sprintId} AND issuetype != Epic${epicKey ? ` AND "Epic Link" = ${epicKey}` : ""}`
-      : epicKey
-      ? `"Epic Link" = ${epicKey} AND issuetype != Epic`
-      : sprintIssueKeys
-      ? `issueKey in (${sprintIssueKeys})`
+      ? `Sprint = ${sprintId} AND issuetype != Epic${
+          epicKey ? ` AND "Epic Link" = ${epicKey}` : ""
+        }`
       : "";
 
-    const rows = issues.map((issue, idx) => {
+    const spanCount = totalRows(stories, orphanIssues);
+    const rows: string[] = [];
+    let firstRow = true;
+
+    for (const story of stories) {
+      const pts = getStoryPoints(story.issue, spFieldId);
+      const filterCell = firstRow
+        ? `<td rowspan="${spanCount}" style="vertical-align:top;">${
+            allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
+          }</td>`
+        : "";
+      firstRow = false;
+
+      rows.push(`
+        <tr>
+          <td>${jiraMacroKey(story.issue.key, appLink)}</td>
+          <td>${escapeHtml(story.issue.fields.status.name)}</td>
+          <td>${escapeHtml(story.issue.fields.summary)}</td>
+          <td>${escapeHtml(story.issue.fields.assignee?.displayName || "Unassigned")}</td>
+          <td style="text-align:center;">${pts > 0 ? pts : "\u2014"}</td>
+          ${filterCell}
+        </tr>`);
+
+      for (const task of story.subIssues) {
+        const tpts = getStoryPoints(task, spFieldId);
+        rows.push(`
+        <tr>
+          <td style="padding-left:20px;border-left:3px solid #dde;">${jiraMacroKey(task.key, appLink)}</td>
+          <td>${escapeHtml(task.fields.status.name)}</td>
+          <td>${escapeHtml(task.fields.summary)}</td>
+          <td>${escapeHtml(task.fields.assignee?.displayName || "Unassigned")}</td>
+          <td style="text-align:center;">${tpts > 0 ? tpts : "\u2014"}</td>
+        </tr>`);
+      }
+    }
+
+    for (const issue of orphanIssues) {
       const pts = getStoryPoints(issue, spFieldId);
-
-      // "All Issues" column: only on the first row, spanning all rows
-      const allIssuesCell =
-        idx === 0
-          ? `<td rowspan="${issues.length}" style="vertical-align:top;">${
-              allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
-            }</td>`
-          : ""; // omitted on subsequent rows (covered by rowspan)
-
-      return `
+      const filterCell = firstRow
+        ? `<td rowspan="${spanCount}" style="vertical-align:top;">${
+            allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
+          }</td>`
+        : "";
+      firstRow = false;
+      rows.push(`
         <tr>
           <td>${jiraMacroKey(issue.key, appLink)}</td>
           <td>${escapeHtml(issue.fields.status.name)}</td>
           <td>${escapeHtml(issue.fields.summary)}</td>
           <td>${escapeHtml(issue.fields.assignee?.displayName || "Unassigned")}</td>
-          <td style="text-align:center;">${pts > 0 ? pts : "—"}</td>
-          ${allIssuesCell}
-        </tr>`;
-    }).join("");
+          <td style="text-align:center;">${pts > 0 ? pts : "\u2014"}</td>
+          ${filterCell}
+        </tr>`);
+    }
 
     return `
       <table data-layout="wide">
@@ -220,14 +259,14 @@ function buildEpicsSection(
         </colgroup>
         <tbody>
           <tr>
-            <th><strong>Story in Sprint</strong></th>
+            <th><strong>Story / Task in Sprint</strong></th>
             <th><strong>Status after sprint</strong></th>
             <th><strong>Comment / Description</strong></th>
             <th><strong>Assignee</strong></th>
             <th><strong>SP</strong></th>
             <th><strong>All Issues</strong></th>
           </tr>
-          ${rows}
+          ${rows.join("")}
         </tbody>
       </table>`;
   }
@@ -237,13 +276,18 @@ function buildEpicsSection(
       return `
         ${separator}
         ${jiraMacroKey(epic.key, appLink)}
-        ${storyTable(epic.issues, epic.key, sprintId)}`;
+        ${storyTable(epic.stories, epic.orphanIssues, epic.key, sprintId)}`;
     })
     .join("");
 
   const noEpicSection =
     noEpic.length > 0
-      ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(noEpic, null, sprintId)}`
+      ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(
+          noEpic.map((issue) => ({ issue, subIssues: [] })),
+          [],
+          null,
+          sprintId
+        )}`
       : "";
 
   return epicSections + noEpicSection;

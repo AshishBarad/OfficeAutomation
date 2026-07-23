@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const title = `${endDate} -> ${sprint.name} Review`;
 
     const existingId = await findExistingPage(config, title);
-    const totalIssues = epics.reduce((s, e) => s + e.issues.length, 0) + noEpic.length;
+    const totalIssues = epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + noEpic.length;
 
     if (existingId) {
       const confClient = axios.create({

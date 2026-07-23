@@ -22,7 +22,8 @@ interface JiraIssue {
   };
 }
 
-interface Epic { key: string; summary: string; status: string; issues: JiraIssue[]; }
+interface JiraStory { issue: JiraIssue; subIssues: JiraIssue[]; }
+interface Epic { key: string; summary: string; status: string; stories: JiraStory[]; orphanIssues: JiraIssue[]; }
 interface SprintCapacity {
   sprintId: number; sprintName: string;
   plannedPoints: number; deliveredPoints: number; completionRatio: string;
@@ -76,6 +77,7 @@ function fmt(iso: string | null | undefined) {
 
 function EpicSection({ epic }: { epic: Epic }) {
   const [open, setOpen] = useState(true);
+  const totalIssues = epic.stories.reduce((s, st) => s + 1 + st.subIssues.length, 0) + epic.orphanIssues.length;
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden mb-3">
       <button onClick={() => setOpen(!open)}
@@ -86,18 +88,18 @@ function EpicSection({ epic }: { epic: Epic }) {
           <span className="text-gray-600 text-sm">{epic.summary}</span>
           {statusBadge(epic.status)}
         </div>
-        <span className="text-xs text-gray-400">{epic.issues.length} issue{epic.issues.length !== 1 ? "s" : ""}</span>
+        <span className="text-xs text-gray-400">{totalIssues} issue{totalIssues !== 1 ? "s" : ""}</span>
       </button>
 
       {open && (
         <div className="overflow-x-auto">
-          {epic.issues.length === 0
+          {epic.stories.length === 0 && epic.orphanIssues.length === 0
             ? <p className="px-5 py-4 text-sm text-gray-400 italic">No issues under this epic.</p>
             : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-800 text-white text-xs uppercase">
-                    <th className="px-4 py-2 text-left">Story</th>
+                    <th className="px-4 py-2 text-left">Story / Task</th>
                     <th className="px-4 py-2 text-left">Status</th>
                     <th className="px-4 py-2 text-left">Assignee</th>
                     <th className="px-4 py-2 text-center">SP</th>
@@ -105,7 +107,40 @@ function EpicSection({ epic }: { epic: Epic }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {epic.issues.map((issue, i) => (
+                  {epic.stories.map((story, si) => (
+                    <>
+                      {/* Story row */}
+                      <tr key={story.issue.key} className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                        <td className="px-4 py-3 font-medium text-blue-600 text-xs">
+                          {story.issue.key}<br />
+                          <span className="text-gray-700 font-normal">{story.issue.fields.summary}</span>
+                        </td>
+                        <td className="px-4 py-2">{statusBadge(story.issue.fields.status.name)}</td>
+                        <td className="px-4 py-2 text-gray-700 text-xs">
+                          {story.issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
+                        </td>
+                        <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
+                        <td className="px-4 py-2 text-gray-500 text-xs">{story.issue.fields.issuetype.name}</td>
+                      </tr>
+                      {/* Task rows */}
+                      {story.subIssues.map((task) => (
+                        <tr key={task.key} className="bg-blue-50 border-l-4 border-blue-200">
+                          <td className="pl-8 pr-4 py-2 text-xs text-blue-700">
+                            <span className="text-gray-400 mr-1">↳</span>
+                            <span className="font-medium">{task.key}</span><br />
+                            <span className="text-gray-600 font-normal">{task.fields.summary}</span>
+                          </td>
+                          <td className="px-4 py-2">{statusBadge(task.fields.status.name)}</td>
+                          <td className="px-4 py-2 text-gray-700 text-xs">
+                            {task.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
+                          </td>
+                          <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
+                          <td className="px-4 py-2 text-gray-500 text-xs">{task.fields.issuetype.name}</td>
+                        </tr>
+                      ))}
+                    </>
+                  ))}
+                  {epic.orphanIssues.map((issue, i) => (
                     <tr key={issue.key} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
                       <td className="px-4 py-3 font-medium text-blue-600 text-xs">
                         {issue.key}<br />
@@ -282,7 +317,7 @@ export default function SprintReviewPage() {
   }
 
   const totalIssues = sprintData
-    ? sprintData.epics.reduce((s, e) => s + e.issues.length, 0) + sprintData.noEpic.length
+    ? sprintData.epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + sprintData.noEpic.length
     : 0;
 
   return (
@@ -349,7 +384,7 @@ export default function SprintReviewPage() {
               <div className="flex gap-6 text-center text-sm">
                 {[
                   { label: "Epics", val: sprintData.epics.length },
-                  { label: "Stories", val: totalIssues },
+                  { label: "Stories", val: sprintData.epics.reduce((s, e) => s + e.stories.length, 0) + sprintData.noEpic.length },
                   { label: "Defects", val: sprintData.defects.length, red: true },
                 ].map(({ label, val, red }) => (
                   <div key={label}>
@@ -365,7 +400,7 @@ export default function SprintReviewPage() {
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Epics &amp; Stories</h3>
           {sprintData.epics.map((epic) => <EpicSection key={epic.key} epic={epic} />)}
           {sprintData.noEpic.length > 0 && (
-            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", issues: sprintData.noEpic }} />
+            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: sprintData.noEpic }} />
           )}
 
           {/* Section: Defects */}

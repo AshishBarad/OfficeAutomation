@@ -12,7 +12,7 @@ export interface JiraIssue {
     reporter?: { displayName: string; emailAddress: string } | null;
     description: string | null;
     // Epic link fields
-    parent?: { key: string; fields: { summary: string } };
+    parent?: { key: string; fields: { summary: string; issuetype?: { name: string } } };
     customfield_10014?: string; // Epic Link (Server fallback)
     customfield_10008?: string; // Epic Link (older Server fallback)
     priority?: { name: string };
@@ -39,11 +39,17 @@ export interface JiraSprint {
   originBoardId?: number;
 }
 
+export interface JiraStory {
+  issue: JiraIssue;
+  subIssues: JiraIssue[]; // tasks / subtasks under this story
+}
+
 export interface JiraEpic {
   key: string;
   summary: string;
   status: string;
-  issues: JiraIssue[];
+  stories: JiraStory[];      // stories, each carrying their sub-tasks
+  orphanIssues: JiraIssue[]; // sprint issues with no story parent
 }
 
 export interface SprintCapacity {
@@ -342,44 +348,92 @@ export async function getSprintReviewData(
     getSprintIssues(config, sprintId, extraFields),
   ]);
 
-  const epicMap = new Map<string, JiraIssue[]>();
+  // Index all sprint issues by key for parent-chain resolution
+  const issueByKey = new Map<string, JiraIssue>();
+  for (const issue of issues) issueByKey.set(issue.key, issue);
+
+  // Helper: walk up parent chain to find the ultimate Epic key
+  function resolveEpicKey(issue: JiraIssue, depth = 0): string | null {
+    if (depth > 5) return null; // guard against cycles
+    const parentType = issue.fields.parent?.fields?.issuetype?.name?.toLowerCase();
+    const parentKey  = issue.fields.parent?.key;
+
+    if (parentType === "epic") return parentKey || null;
+
+    // Explicit epic-link custom fields
+    const epicLinkVal = epicLinkFieldId
+      ? (issue.fields[epicLinkFieldId] as string | undefined)
+      : undefined;
+    if (epicLinkVal) return epicLinkVal;
+    if (issue.fields.customfield_10014) return issue.fields.customfield_10014;
+    if (issue.fields.customfield_10008) return issue.fields.customfield_10008;
+
+    // Parent is a Story in the sprint — recurse to find its epic
+    if (parentKey && issueByKey.has(parentKey)) {
+      return resolveEpicKey(issueByKey.get(parentKey)!, depth + 1);
+    }
+    return null;
+  }
+
+  // Bucket 1: epicMap  — epicKey → { stories: storyKey[], orphans[] }
+  // Bucket 2: storyTaskMap — storyKey → task[]
+  const epicStoryMap  = new Map<string, JiraIssue[]>();   // epicKey → direct story issues
+  const storyTaskMap  = new Map<string, JiraIssue[]>();   // storyKey → task issues
   const noEpic: JiraIssue[] = [];
 
   for (const issue of issues) {
     if (issue.fields.issuetype.name === "Epic") continue;
 
-    // Try to find epic key: parent hierarchy → discovered epic link field → fallback fields
-    const epicKey: string | null =
-      issue.fields.parent?.key ||
-      (epicLinkFieldId
-        ? (issue.fields[epicLinkFieldId] as string | undefined) || null
-        : null) ||
-      issue.fields.customfield_10014 ||
-      issue.fields.customfield_10008 ||
-      null;
+    const parentKey  = issue.fields.parent?.key;
+    const parentType = issue.fields.parent?.fields?.issuetype?.name?.toLowerCase();
 
-    if (epicKey) {
-      if (!epicMap.has(epicKey)) epicMap.set(epicKey, []);
-      epicMap.get(epicKey)!.push(issue);
+    // Is this issue a direct child of an Epic?
+    const directEpicParent = parentType === "epic";
+    // Is this issue a child of a Story that is itself in the sprint?
+    const storyParentInSprint = parentKey && issueByKey.has(parentKey) && !directEpicParent;
+
+    if (directEpicParent && parentKey) {
+      // Story directly under an Epic
+      if (!epicStoryMap.has(parentKey)) epicStoryMap.set(parentKey, []);
+      epicStoryMap.get(parentKey)!.push(issue);
+    } else if (storyParentInSprint && parentKey) {
+      // Task / sub-task under a Story
+      if (!storyTaskMap.has(parentKey)) storyTaskMap.set(parentKey, []);
+      storyTaskMap.get(parentKey)!.push(issue);
     } else {
-      noEpic.push(issue);
+      // Fallback: try to resolve via epic-link fields
+      const epicKey = resolveEpicKey(issue);
+      if (epicKey) {
+        if (!epicStoryMap.has(epicKey)) epicStoryMap.set(epicKey, []);
+        epicStoryMap.get(epicKey)!.push(issue);
+      } else {
+        noEpic.push(issue);
+      }
     }
   }
 
-  // Fetch epic details in parallel
-  const epicKeys = Array.from(epicMap.keys());
+  // Fetch epic details for every unique epic key
+  const epicKeyList = Array.from(epicStoryMap.keys());
   const epicDetails = await Promise.all(
-    epicKeys.map((key) =>
+    epicKeyList.map((key) =>
       getEpic(config, key).catch(() => ({ key, summary: key, status: "Unknown" }))
     )
   );
 
-  const epics: JiraEpic[] = epicDetails.map((epic) => ({
-    key: epic.key,
-    summary: epic.summary,
-    status: epic.status,
-    issues: epicMap.get(epic.key) || [],
-  }));
+  const epics: JiraEpic[] = epicDetails.map((epic) => {
+    const storyIssues = epicStoryMap.get(epic.key) || [];
+    const stories: JiraStory[] = storyIssues.map((storyIssue) => ({
+      issue: storyIssue,
+      subIssues: storyTaskMap.get(storyIssue.key) || [],
+    }));
+    return {
+      key: epic.key,
+      summary: epic.summary,
+      status: epic.status,
+      stories,
+      orphanIssues: [],
+    };
+  });
 
   // Fetch defects via dedicated JQL (more reliable than filtering sprint issues)
   const defects = await getDefectsByJQL(config, sprintId, storyPointsFieldId);
