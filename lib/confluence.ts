@@ -170,17 +170,23 @@ function buildEpicsSection(
   noEpic: JiraIssue[],
   issueUrl: (key: string) => string,
   appLink: JiraAppLink,
-  spFieldId?: string | null
+  spFieldId?: string | null,
+  sprintId?: string | number
 ): string {
   const separator = '<hr style="border-top: 3px dashed #bbb; margin: 24px 0;" />';
 
-  function storyTable(issues: JiraIssue[], epicKey: string | null): string {
+  function storyTable(issues: JiraIssue[], epicKey: string | null, sprintId?: string | number): string {
     if (issues.length === 0) return "<p><em>No issues found.</em></p>";
 
-    // Build the "All Issues" filter cell — merged across all story rows (rowspan)
-    const projectKey = issues[0]?.key.split("-")[0] ?? "";
-    const allIssuesJql = epicKey
-      ? `project = ${projectKey} AND "Epic Link" = ${epicKey}`
+    // Build the "All Issues" filter cell — scoped to sprint issues only, merged via rowspan
+    const sprintIssueKeys = issues.map((i) => i.key).join(", ");
+    // JQL: only issues actually taken into this sprint
+    const allIssuesJql = sprintId
+      ? `Sprint = ${sprintId} AND issuetype != Epic${epicKey ? ` AND "Epic Link" = ${epicKey}` : ""}`
+      : epicKey
+      ? `"Epic Link" = ${epicKey} AND issuetype != Epic`
+      : sprintIssueKeys
+      ? `issueKey in (${sprintIssueKeys})`
       : "";
 
     const rows = issues.map((issue, idx) => {
@@ -230,15 +236,14 @@ function buildEpicsSection(
     .map((epic) => {
       return `
         ${separator}
-        <h2>${escapeHtml(epic.key)} – ${escapeHtml(epic.summary)} (${escapeHtml(epic.status)})</h2>
         ${jiraMacroKey(epic.key, appLink)}
-        ${storyTable(epic.issues, epic.key)}`;
+        ${storyTable(epic.issues, epic.key, sprintId)}`;
     })
     .join("");
 
   const noEpicSection =
     noEpic.length > 0
-      ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(noEpic, null)}`
+      ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(noEpic, null, sprintId)}`
       : "";
 
   return epicSections + noEpicSection;
@@ -307,15 +312,18 @@ function completionColor(ratio: string): string {
 }
 
 function buildCapacitySection(capacityHistory: SprintCapacity[]): string {
+  // Only show the current (last) sprint — no history rows, no badges
   const c = capacityHistory[capacityHistory.length - 1];
   if (!c) return "";
+
+  const ratio = c.completionRatio !== "N/A" ? c.completionRatio : "—";
 
   const row = `
     <tr>
       <td>${escapeHtml(c.sprintName)}</td>
       <td style="text-align:center;">${c.plannedPoints > 0 ? c.plannedPoints : "—"}</td>
       <td style="text-align:center;">${c.deliveredPoints > 0 ? c.deliveredPoints : "—"}</td>
-      <td style="text-align:center;">${c.completionRatio !== "N/A" ? c.completionRatio : "—"}</td>
+      <td style="text-align:center;">${ratio}</td>
     </tr>`;
 
   return `
@@ -355,7 +363,7 @@ export function buildSprintReviewStorageFormat(
 
   return `
     ${buildTimetable(sprint)}
-    ${buildEpicsSection(epics, noEpic, issueUrl, appLink, storyPointsFieldId)}
+    ${buildEpicsSection(epics, noEpic, issueUrl, appLink, storyPointsFieldId, sprint.id)}
     ${sep}
     ${buildDefectsSection(defects, issueUrl)}
     ${sep}
