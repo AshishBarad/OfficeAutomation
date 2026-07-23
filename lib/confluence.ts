@@ -189,10 +189,10 @@ function buildEpicsSection(
     if (stories.length === 0 && orphanIssues.length === 0)
       return "<p><em>No issues found.</em></p>";
 
-    const allIssuesJql = sprintId
-      ? `Sprint = ${sprintId} AND issuetype != Epic${
-          epicKey ? ` AND "Epic Link" = ${epicKey}` : ""
-        }`
+    // Only show the "All Issues" filter column when there is an epic to scope the JQL
+    const showFilter = !!epicKey;
+    const allIssuesJql = showFilter && sprintId
+      ? `Sprint = ${sprintId} AND issuetype != Epic AND "Epic Link" = ${epicKey}`
       : "";
 
     const spanCount = totalRows(stories, orphanIssues);
@@ -201,7 +201,7 @@ function buildEpicsSection(
 
     for (const story of stories) {
       const pts = getStoryPoints(story.issue, spFieldId);
-      const filterCell = firstRow
+      const filterCell = showFilter && firstRow
         ? `<td rowspan="${spanCount}" style="vertical-align:top;">${
             allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
           }</td>`
@@ -233,7 +233,7 @@ function buildEpicsSection(
 
     for (const issue of orphanIssues) {
       const pts = getStoryPoints(issue, spFieldId);
-      const filterCell = firstRow
+      const filterCell = showFilter && firstRow
         ? `<td rowspan="${spanCount}" style="vertical-align:top;">${
             allIssuesJql ? jiraMacroFilter(allIssuesJql, appLink) : ""
           }</td>`
@@ -255,7 +255,7 @@ function buildEpicsSection(
         <colgroup>
           <col style="width: 180px;" /><col style="width: 110px;" />
           <col style="width: 240px;" /><col style="width: 120px;" />
-          <col style="width: 50px;" /><col style="width: 300px;" />
+          <col style="width: 50px;" />${showFilter ? `<col style="width: 300px;" />` : ""}
         </colgroup>
         <tbody>
           <tr>
@@ -264,7 +264,7 @@ function buildEpicsSection(
             <th><strong>Comment / Description</strong></th>
             <th><strong>Assignee</strong></th>
             <th><strong>SP</strong></th>
-            <th><strong>All Issues</strong></th>
+            ${showFilter ? `<th><strong>All Issues</strong></th>` : ""}
           </tr>
           ${rows.join("")}
         </tbody>
