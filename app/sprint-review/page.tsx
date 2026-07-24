@@ -226,6 +226,8 @@ function DefectsTable({ defects }: { defects: JiraIssue[] }) {
 
 function CapacityTable({ history }: { history: SprintCapacity[] }) {
   const [open, setOpen] = useState(true);
+  const current = history[history.length - 1];
+  if (!current) return null;
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
       <button onClick={() => setOpen(!open)}
@@ -235,7 +237,7 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
           <BarChart2 size={15} className="text-blue-500" />
           <span className="font-semibold text-gray-800 text-sm">Sprint Report — Completion Ratio</span>
         </div>
-        <span className="text-xs text-gray-400">{history.length} sprint{history.length !== 1 ? "s" : ""}</span>
+        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">current sprint</span>
       </button>
 
       {open && (
@@ -250,21 +252,15 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
               </tr>
             </thead>
             <tbody>
-              {history.map((row, i) => {
-                const isCurrent = i === history.length - 1;
-                return (
-                  <tr key={row.sprintId}
-                    className={`${i % 2 === 0 ? "bg-white" : "bg-gray-50"} ${isCurrent ? "font-semibold" : ""}`}>
-                    <td className="px-4 py-2 text-gray-800">
-                      {row.sprintName}
-                      {isCurrent && <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">current</span>}
-                    </td>
-                    <td className="px-4 py-2 text-center text-gray-700">{row.plannedPoints > 0 ? row.plannedPoints : "—"}</td>
-                    <td className="px-4 py-2 text-center text-gray-700">{row.deliveredPoints > 0 ? row.deliveredPoints : "—"}</td>
-                    <td className="px-4 py-2 text-center">{completionBadge(row.completionRatio)}</td>
-                  </tr>
-                );
-              })}
+              <tr className="bg-white font-semibold">
+                <td className="px-4 py-2 text-gray-800">
+                  {current.sprintName}
+                  <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">current</span>
+                </td>
+                <td className="px-4 py-2 text-center text-gray-700">{current.plannedPoints > 0 ? current.plannedPoints : "—"}</td>
+                <td className="px-4 py-2 text-center text-gray-700">{current.deliveredPoints > 0 ? current.deliveredPoints : "—"}</td>
+                <td className="px-4 py-2 text-center">{completionBadge(current.completionRatio)}</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -310,8 +306,13 @@ export default function SprintReviewPage() {
         body: JSON.stringify({ sprintId: sprintId.trim() }),
       });
       const data = await res.json();
-      if (data.success) setResult(data);
-      else setError(data.error || "Failed to create Confluence page");
+      if (data.success) {
+        setResult(data);
+        // Open the created/updated Confluence page in a new tab immediately
+        window.open(data.url, "_blank", "noopener,noreferrer");
+      } else {
+        setError(data.error || "Failed to create Confluence page");
+      }
     } catch (e) { setError(String(e)); }
     finally { setCreating(false); }
   }

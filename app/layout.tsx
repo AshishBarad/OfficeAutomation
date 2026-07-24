@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
+import KillSwitch from "@/components/KillSwitch";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
 
@@ -18,6 +19,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={geist.variable}>
       <body className="flex min-h-screen bg-gray-50 text-gray-900 antialiased">
+        <KillSwitch />
         <Sidebar />
         <main className="flex-1 overflow-auto">{children}</main>
       </body>
