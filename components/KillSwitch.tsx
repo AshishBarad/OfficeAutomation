@@ -6,10 +6,15 @@ import { useEffect } from "react";
  *
  * Strategy:
  *  1. `sendBeacon` on `beforeunload` — fires reliably when tab/window closes.
- *     The server receives the POST and calls process.exit(0).
- *  2. Heartbeat fallback — pings /api/heartbeat every 20 s.
- *     If the server stops receiving pings for > 35 s it also exits.
- *     This covers edge cases where beforeunload doesn't fire (crash, kill -9, etc.).
+ *     The server receives the POST to /api/shutdown and calls process.exit(0).
+ *
+ *  2. Heartbeat fallback (60 s ping) — handles cases where beforeunload doesn't
+ *     fire (crash, force-quit, etc.). The server allows a 5-minute gap between
+ *     pings before deciding the browser is gone, which is safely above the
+ *     ~1-minute throttle browsers apply to background-tab timers.
+ *
+ * The server does NOT start its shutdown timer until the first ping arrives,
+ * so it stays alive indefinitely while you have any tab open.
  */
 export default function KillSwitch() {
   useEffect(() => {
@@ -19,12 +24,12 @@ export default function KillSwitch() {
     }
     window.addEventListener("beforeunload", onUnload);
 
-    // ── 2. Heartbeat fallback ──────────────────────────────────────────────
+    // ── 2. Heartbeat fallback (60 s — survives browser background throttle) ─
     function ping() {
       fetch("/api/heartbeat", { method: "POST" }).catch(() => {/* silent */});
     }
-    ping(); // immediate ping on mount so the server starts its timer
-    const heartbeatId = setInterval(ping, 20_000);
+    ping(); // immediate ping on mount
+    const heartbeatId = setInterval(ping, 60_000); // 60 s — browsers throttle bg tabs to ~1 min
 
     return () => {
       window.removeEventListener("beforeunload", onUnload);
@@ -32,5 +37,5 @@ export default function KillSwitch() {
     };
   }, []);
 
-  return null; // renders nothing
+  return null;
 }

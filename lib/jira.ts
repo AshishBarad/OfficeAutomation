@@ -193,6 +193,15 @@ export async function getSprintIssues(
     startAt += maxResults;
   }
 
+  // Filter by defaultProject if configured — sprints can contain tickets from
+  // multiple teams/projects; we only want the ones belonging to this project.
+  const projectKey = config.jira.defaultProject?.trim().toUpperCase();
+  if (projectKey) {
+    return allIssues.filter((i) =>
+      i.key.toUpperCase().startsWith(`${projectKey}-`)
+    );
+  }
+
   return allIssues;
 }
 
