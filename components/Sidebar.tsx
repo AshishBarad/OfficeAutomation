@@ -7,11 +7,13 @@ import {
   FileText,
   Bell,
   Zap,
+  Brain,
 } from "lucide-react";
 
 const links = [
   { href: "/", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/sprint-review", icon: FileText, label: "Sprint Review" },
+  { href: "/steering", icon: Brain, label: "Steering Agenda" },
   { href: "/alerts", icon: Bell, label: "Teams Alerts" },
   { href: "/config", icon: Settings, label: "Config" },
 ];

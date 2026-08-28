@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import {
   Save, Eye, EyeOff, CheckCircle, AlertCircle,
-  Loader2, Info, Wifi, WifiOff,
+  Loader2, Info, Wifi, WifiOff, Brain,
 } from "lucide-react";
 
 type ServerAuthMode = "pat" | "basic";
@@ -15,10 +15,11 @@ type JiraConfig = {
 type ConfluenceConfig = {
   baseUrl: string; email: string; apiToken: string;
   username: string; password: string;
-  spaceKey: string; parentPageId: string;
+  spaceKey: string; parentPageId: string; steeringParentPageId: string;
 };
 type TeamsConfig = { defaultWebhookUrl: string; notifyChannel: "teams" | "none" };
 type AlertsConfig = { pollIntervalMinutes: number };
+type AzureAiConfig = { endpoint: string; apiKey: string; deploymentName: string; apiVersion: string };
 
 type ConnStatus = "idle" | "testing" | "ok" | "error";
 type ConnResult = { status: ConnStatus; message: string };
@@ -29,7 +30,10 @@ const EMPTY_JIRA: JiraConfig = {
 };
 const EMPTY_CONF: ConfluenceConfig = {
   baseUrl: "", email: "", apiToken: "", username: "", password: "",
-  spaceKey: "", parentPageId: "",
+  spaceKey: "", parentPageId: "", steeringParentPageId: "",
+};
+const EMPTY_AZURE: AzureAiConfig = {
+  endpoint: "", apiKey: "", deploymentName: "gpt-4o", apiVersion: "2025-01-01-preview",
 };
 
 const POLL_OPTIONS = [
@@ -84,8 +88,9 @@ export default function ConfigPage() {
   const [confluence, setConfluence] = useState<ConfluenceConfig>(EMPTY_CONF);
   const [teams, setTeams] = useState<TeamsConfig>({ defaultWebhookUrl: "", notifyChannel: "teams" });
   const [alerts, setAlerts] = useState<AlertsConfig>({ pollIntervalMinutes: 15 });
+  const [azureAi, setAzureAi] = useState<AzureAiConfig>(EMPTY_AZURE);
 
-  const [show, setShow] = useState({ jiraPat: false, jiraPwd: false, confPat: false, confPwd: false, webhook: false });
+  const [show, setShow] = useState({ jiraPat: false, jiraPwd: false, confPat: false, confPwd: false, webhook: false, azureKey: false });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,6 +98,7 @@ export default function ConfigPage() {
 
   const [jiraConn, setJiraConn] = useState<ConnResult>({ status: "idle", message: "" });
   const [confConn, setConfConn] = useState<ConnResult>({ status: "idle", message: "" });
+  const [azureConn, setAzureConn] = useState<ConnResult>({ status: "idle", message: "" });
 
   useEffect(() => {
     fetch("/api/config")
@@ -103,6 +109,7 @@ export default function ConfigPage() {
           setConfluence({ ...EMPTY_CONF, ...d.config.confluence });
           setTeams({ defaultWebhookUrl: "", notifyChannel: "teams", ...d.config.teams });
           setAlerts(d.config.alerts);
+          setAzureAi({ ...EMPTY_AZURE, ...d.config.azureAi });
         }
         setLoading(false);
       });
@@ -111,6 +118,7 @@ export default function ConfigPage() {
   // Reset connection status when relevant fields change
   useEffect(() => { setJiraConn({ status: "idle", message: "" }); }, [jira.baseUrl, jira.apiToken, jira.username, jira.password]);
   useEffect(() => { setConfConn({ status: "idle", message: "" }); }, [confluence.baseUrl, confluence.apiToken, confluence.username, confluence.password, confluence.spaceKey]);
+  useEffect(() => { setAzureConn({ status: "idle", message: "" }); }, [azureAi.endpoint, azureAi.apiKey, azureAi.deploymentName]);
 
   async function handleSave() {
     setSubmitted(true);
@@ -127,7 +135,7 @@ export default function ConfigPage() {
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jira, confluence, teams, alerts }),
+        body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, steering: { parentPageId: confluence.steeringParentPageId } }),
       });
       const data = await res.json();
       if (data.success) {
@@ -144,14 +152,19 @@ export default function ConfigPage() {
     }
   }
 
-  async function testJira() {
-    setJiraConn({ status: "testing", message: "" });
-    // Save first so the API route reads the latest values
+  /** Persist current state to config so test API routes read up-to-date values */
+  async function saveForTest() {
     await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jira, confluence, teams, alerts }),
+      body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, steering: { parentPageId: confluence.steeringParentPageId } }),
     });
+  }
+
+  async function testJira() {
+    setJiraConn({ status: "testing", message: "" });
+    // Save first so the API route reads the latest values
+    await saveForTest();
     const res = await fetch("/api/jira/test");
     const data = await res.json();
     setJiraConn({
@@ -164,11 +177,7 @@ export default function ConfigPage() {
 
   async function testConfluence() {
     setConfConn({ status: "testing", message: "" });
-    await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jira, confluence, teams, alerts }),
-    });
+    await saveForTest();
     const res = await fetch("/api/confluence/test");
     const data = await res.json();
     setConfConn({
@@ -176,6 +185,17 @@ export default function ConfigPage() {
       message: data.success
         ? `Connected to space "${data.space?.name || confluence.spaceKey}"`
         : data.error,
+    });
+  }
+
+  async function testAzure() {
+    setAzureConn({ status: "testing", message: "" });
+    await saveForTest();
+    const res = await fetch("/api/config/test-azure");
+    const data = await res.json();
+    setAzureConn({
+      status: data.success ? "ok" : "error",
+      message: data.success ? `Connected — model: ${data.model}` : data.error,
     });
   }
 
@@ -349,23 +369,28 @@ export default function ConfigPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <Field label="Space Key" required placeholder="e.g. EADRAX"
               value={confluence.spaceKey} error={confErrors.spaceKey}
               hint="Found in Confluence → Space Settings → Space Details"
               onChange={(v) => setConfluence({ ...confluence, spaceKey: v })} />
-            <Field label="Parent Page ID"
+            <Field label="Sprint Review Parent Page ID"
               placeholder="e.g. 8307652676"
-              hint='From the page URL: /pages/{id}/'
+              hint='From the Sprint Review parent page URL: /pages/{id}/'
               value={confluence.parentPageId}
               onChange={(v) => setConfluence({ ...confluence, parentPageId: v })} />
+            <Field label="Steering Parent Page ID"
+              placeholder="e.g. 8307652677"
+              hint='From the Steering Agenda parent page URL: /pages/{id}/'
+              value={confluence.steeringParentPageId}
+              onChange={(v) => setConfluence({ ...confluence, steeringParentPageId: v })} />
           </div>
         </div>
 
         <div className="mt-3 p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800 flex gap-2">
           <Info size={14} className="flex-shrink-0 mt-0.5" />
           <span>
-            <strong>Finding Parent Page ID:</strong> Open your &quot;Sprint-Review&quot; parent page in Confluence.
+            <strong>Finding Parent Page IDs:</strong> Open the parent page in Confluence.
             The URL will contain <code className="bg-amber-100 px-1 rounded">/pages/8307652676/</code> — copy that number.
           </span>
         </div>
@@ -376,6 +401,67 @@ export default function ConfigPage() {
           <button onClick={testConfluence} disabled={confConn.status === "testing"}
             className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition">
             {confConn.status === "testing"
+              ? <Loader2 size={14} className="animate-spin" />
+              : <Wifi size={14} />}
+            Test Connection
+          </button>
+        </div>
+      </section>
+
+      {/* ── AZURE AI ─────────────────────────────────── */}
+      <section className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
+        <div className="flex items-center gap-2 mb-1">
+          <Brain size={18} className="text-purple-500" />
+          <h2 className="text-lg font-semibold text-gray-900">Azure OpenAI</h2>
+          <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full">Steering Agenda</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-5">
+          Required for the AI-powered Steering Meeting Agenda feature. Leave blank if not using it.
+        </p>
+
+        <div className="grid grid-cols-1 gap-4">
+          <Field label="Endpoint"
+            placeholder="https://myresource.openai.azure.com"
+            hint="Azure Portal → Azure OpenAI resource → Keys and Endpoint"
+            value={azureAi.endpoint}
+            onChange={(v) => setAzureAi({ ...azureAi, endpoint: v })} />
+
+          <PasswordField label="API Key"
+            hint="Azure Portal → Azure OpenAI resource → Keys and Endpoint → KEY 1"
+            value={azureAi.apiKey}
+            show={show.azureKey}
+            onToggle={() => setShow({ ...show, azureKey: !show.azureKey })}
+            onChange={(v) => setAzureAi({ ...azureAi, apiKey: v })} />
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Deployment Name"
+              placeholder="gpt-4o"
+              hint="Azure AI Foundry → Deployments → your model name"
+              value={azureAi.deploymentName}
+              onChange={(v) => setAzureAi({ ...azureAi, deploymentName: v })} />
+            <Field label="API Version"
+              placeholder="2025-01-01-preview"
+              hint="e.g. 2025-01-01-preview"
+              value={azureAi.apiVersion}
+              onChange={(v) => setAzureAi({ ...azureAi, apiVersion: v })} />
+          </div>
+        </div>
+
+        <div className="mt-4 p-3 bg-purple-50 border border-purple-100 rounded-lg text-xs text-purple-800 flex gap-2">
+          <Info size={14} className="flex-shrink-0 mt-0.5" />
+          <span>
+            <strong>Getting credentials:</strong> Go to{" "}
+            <strong>Azure Portal → Azure OpenAI</strong> → select your resource →{" "}
+            <strong>Keys and Endpoint</strong>. Copy the endpoint URL and either KEY 1 or KEY 2.
+            The deployment name is found in <strong>Azure AI Foundry → Deployments</strong>.
+          </span>
+        </div>
+
+        <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between">
+          <ConnBadge result={azureConn} />
+          <button onClick={testAzure} disabled={azureConn.status === "testing"}
+            className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition">
+            {azureConn.status === "testing"
               ? <Loader2 size={14} className="animate-spin" />
               : <Wifi size={14} />}
             Test Connection

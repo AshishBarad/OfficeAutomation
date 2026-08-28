@@ -51,6 +51,15 @@ export interface AppConfig {
     pollIntervalMinutes: number;
     lastPolledAt?: string;
   };
+  azureAi: {
+    endpoint: string;       // https://myresource.openai.azure.com
+    apiKey: string;
+    deploymentName: string; // e.g. gpt-4o
+    apiVersion: string;     // e.g. 2025-01-01-preview
+  };
+  steering: {
+    parentPageId: string;   // Confluence parent page ID for steering pages
+  };
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -81,6 +90,8 @@ const DEFAULT_CONFIG: AppConfig = {
     rules: [],
     pollIntervalMinutes: 15,
   },
+  azureAi: { endpoint: "", apiKey: "", deploymentName: "gpt-4o", apiVersion: "2025-01-01-preview" },
+  steering: { parentPageId: "" },
 };
 
 /** Deep-merge: fills in any missing keys from DEFAULT_CONFIG without overwriting user values */
@@ -90,6 +101,8 @@ function deepMerge(defaults: AppConfig, saved: Partial<AppConfig>): AppConfig {
     confluence: { ...defaults.confluence, ...(saved.confluence ?? {}) },
     teams:      { ...defaults.teams,      ...(saved.teams      ?? {}) },
     alerts:     { ...defaults.alerts,     ...(saved.alerts     ?? {}) },
+    azureAi:    { ...defaults.azureAi,    ...(saved.azureAi    ?? {}) },
+    steering:   { ...defaults.steering,   ...(saved.steering   ?? {}) },
   } as AppConfig;
 }
 
