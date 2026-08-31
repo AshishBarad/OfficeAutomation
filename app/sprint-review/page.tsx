@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   FileText, ExternalLink, Loader2, CheckCircle,
-  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2,
+  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2, Filter,
 } from "lucide-react";
 
 interface JiraIssue {
@@ -19,6 +19,7 @@ interface JiraIssue {
     duedate?: string | null;
     created: string;
     updated: string;
+    _completionStatus?: "completed" | "not-completed" | "removed";
   };
 }
 
@@ -68,6 +69,15 @@ function completionBadge(ratio: string) {
   return <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cls}`}>{ratio}</span>;
 }
 
+function completionStatusBadge(status: "completed" | "not-completed" | "removed" | undefined) {
+  if (!status) return null;
+  if (status === "completed")
+    return <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-green-100 text-green-700 whitespace-nowrap">✓ Done</span>;
+  if (status === "not-completed")
+    return <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 whitespace-nowrap">↩ Carried over</span>;
+  return <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 whitespace-nowrap">✕ Removed</span>;
+}
+
 function fmt(iso: string | null | undefined) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
@@ -101,8 +111,8 @@ function EpicSection({ epic }: { epic: Epic }) {
                   <tr className="bg-gray-800 text-white text-xs uppercase">
                     <th className="px-4 py-2 text-left">Story / Task</th>
                     <th className="px-4 py-2 text-left">Status</th>
+                    <th className="px-4 py-2 text-left">Sprint Result</th>
                     <th className="px-4 py-2 text-left">Assignee</th>
-                    <th className="px-4 py-2 text-center">SP</th>
                     <th className="px-4 py-2 text-left">Type</th>
                   </tr>
                 </thead>
@@ -116,10 +126,10 @@ function EpicSection({ epic }: { epic: Epic }) {
                           <span className="text-gray-700 font-normal">{story.issue.fields.summary}</span>
                         </td>
                         <td className="px-4 py-2">{statusBadge(story.issue.fields.status.name)}</td>
+                        <td className="px-4 py-2">{completionStatusBadge(story.issue.fields._completionStatus)}</td>
                         <td className="px-4 py-2 text-gray-700 text-xs">
                           {story.issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                         </td>
-                        <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
                         <td className="px-4 py-2 text-gray-500 text-xs">{story.issue.fields.issuetype.name}</td>
                       </tr>
                       {/* Task rows */}
@@ -131,10 +141,10 @@ function EpicSection({ epic }: { epic: Epic }) {
                             <span className="text-gray-600 font-normal">{task.fields.summary}</span>
                           </td>
                           <td className="px-4 py-2">{statusBadge(task.fields.status.name)}</td>
+                          <td className="px-4 py-2">{completionStatusBadge(task.fields._completionStatus)}</td>
                           <td className="px-4 py-2 text-gray-700 text-xs">
                             {task.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                           </td>
-                          <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
                           <td className="px-4 py-2 text-gray-500 text-xs">{task.fields.issuetype.name}</td>
                         </tr>
                       ))}
@@ -147,6 +157,7 @@ function EpicSection({ epic }: { epic: Epic }) {
                         <span className="text-gray-700 font-normal">{issue.fields.summary}</span>
                       </td>
                       <td className="px-4 py-2">{statusBadge(issue.fields.status.name)}</td>
+                      <td className="px-4 py-2">{completionStatusBadge(issue.fields._completionStatus)}</td>
                       <td className="px-4 py-2 text-gray-700 text-xs">
                         {issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                       </td>
@@ -273,6 +284,7 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
 
 export default function SprintReviewPage() {
   const [sprintId, setSprintId] = useState("");
+  const [projectKey, setProjectKey] = useState(""); // inline project key filter
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sprintData, setSprintData] = useState<SprintData | null>(null);
@@ -282,11 +294,25 @@ export default function SprintReviewPage() {
     epicCount: number; issueCount: number; defectCount: number; sprintCount: number;
   } | null>(null);
 
+  // Load default project key from config on mount
+  useEffect(() => {
+    fetch("/api/config")
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.config?.jira?.defaultProject) {
+          setProjectKey(d.config.jira.defaultProject);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   async function handleFetch() {
     if (!sprintId.trim()) return;
     setLoading(true); setError(null); setSprintData(null); setResult(null);
     try {
-      const res = await fetch(`/api/jira/sprint?id=${sprintId.trim()}`);
+      const params = new URLSearchParams({ id: sprintId.trim() });
+      if (projectKey.trim()) params.set("project", projectKey.trim().toUpperCase());
+      const res = await fetch(`/api/jira/sprint?${params}`);
       const data = await res.json();
       if (data.success) {
         setSprintData({ sprint: data.sprint, epics: data.epics, noEpic: data.noEpic, defects: data.defects, capacityHistory: data.capacityHistory });
@@ -308,7 +334,6 @@ export default function SprintReviewPage() {
       const data = await res.json();
       if (data.success) {
         setResult(data);
-        // Open the created/updated Confluence page in a new tab immediately
         window.open(data.url, "_blank", "noopener,noreferrer");
       } else {
         setError(data.error || "Failed to create Confluence page");
@@ -333,21 +358,41 @@ export default function SprintReviewPage() {
 
       {/* Input */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Sprint ID
-          <span className="ml-2 text-xs text-gray-400 font-normal">(Jira board URL → sprintId=…)</span>
-        </label>
-        <div className="flex gap-3">
-          <input type="text" placeholder="e.g. 42" value={sprintId}
-            onChange={(e) => setSprintId(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleFetch()}
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <div className="flex gap-3 items-end">
+          {/* Sprint ID */}
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Sprint ID
+              <span className="ml-2 text-xs text-gray-400 font-normal">(Jira board URL → sprintId=…)</span>
+            </label>
+            <input type="text" placeholder="e.g. 42" value={sprintId}
+              onChange={(e) => setSprintId(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleFetch()}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Project Key filter */}
+          <div className="w-36">
+            <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+              <Filter size={12} className="text-gray-400" /> Project Key
+            </label>
+            <input type="text" placeholder="e.g. NWAP" value={projectKey}
+              onChange={(e) => setProjectKey(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === "Enter" && handleFetch()}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono uppercase" />
+          </div>
+
           <button onClick={handleFetch} disabled={loading || !sprintId.trim()}
-            className="flex items-center gap-2 bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition">
+            className="flex items-center gap-2 bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition h-[38px] self-end">
             {loading && <Loader2 size={15} className="animate-spin" />}
             Fetch Sprint
           </button>
         </div>
+        {projectKey.trim() && (
+          <p className="mt-2 text-xs text-blue-600 flex items-center gap-1">
+            <Filter size={11} /> Filtering to <strong>{projectKey.trim().toUpperCase()}-*</strong> tickets only (issues + defects)
+          </p>
+        )}
       </div>
 
       {error && (
@@ -376,11 +421,21 @@ export default function SprintReviewPage() {
           <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-bold text-gray-900 mb-1">{sprintData.sprint.name}</h2>
+                <div className="flex items-center gap-2 mb-1">
+                  <h2 className="text-lg font-bold text-gray-900">{sprintData.sprint.name}</h2>
+                  {sprintData.sprint.state === "closed" && (
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">📋 Closed Sprint</span>
+                  )}
+                </div>
                 <div className="flex gap-4 text-sm text-gray-500">
                   <span>📅 {fmt(sprintData.sprint.startDate)} → {fmt(sprintData.sprint.endDate)}</span>
                   {statusBadge(sprintData.sprint.state)}
                 </div>
+                {sprintData.sprint.state === "closed" && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Sprint Result column shows official completion status from the Jira Sprint Report (✓ Done / ↩ Carried over / ✕ Removed).
+                  </p>
+                )}
               </div>
               <div className="flex gap-6 text-center text-sm">
                 {[

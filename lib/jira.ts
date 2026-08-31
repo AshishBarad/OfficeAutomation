@@ -24,6 +24,8 @@ export interface JiraIssue {
     customfield_10016?: number | null;
     customfield_10028?: number | null;
     customfield_10004?: number | null;
+    // Sprint report completion status (set for closed sprints only)
+    _completionStatus?: "completed" | "not-completed" | "removed";
     // Allow dynamic custom field access for instance-specific fields
     [key: string]: unknown;
   };
@@ -167,7 +169,8 @@ export async function getSprint(
 export async function getSprintIssues(
   config: AppConfig,
   sprintId: string,
-  extraFields: string[] = []
+  extraFields: string[] = [],
+  projectKeyOverride?: string
 ): Promise<JiraIssue[]> {
   const client = jiraClient(config);
   const allIssues: JiraIssue[] = [];
@@ -193,9 +196,8 @@ export async function getSprintIssues(
     startAt += maxResults;
   }
 
-  // Filter by defaultProject if configured — sprints can contain tickets from
-  // multiple teams/projects; we only want the ones belonging to this project.
-  const projectKey = config.jira.defaultProject?.trim().toUpperCase();
+  // Filter by project — use override from UI, fall back to config default
+  const projectKey = (projectKeyOverride ?? config.jira.defaultProject)?.trim().toUpperCase();
   if (projectKey) {
     return allIssues.filter((i) =>
       i.key.toUpperCase().startsWith(`${projectKey}-`)
@@ -212,10 +214,16 @@ export async function getSprintIssues(
 export async function getDefectsByJQL(
   config: AppConfig,
   sprintId: string,
-  spFieldId?: string | null
+  spFieldId?: string | null,
+  projectKeyOverride?: string
 ): Promise<JiraIssue[]> {
   const client = jiraClient(config);
-  const jql = `issuetype in (Defect, Bug) AND Sprint = ${sprintId} ORDER BY created DESC`;
+
+  // Apply the same project filter used for sprint issues
+  const projectKey = (projectKeyOverride ?? config.jira.defaultProject)?.trim();
+  const projectClause = projectKey ? ` AND project = "${projectKey}"` : "";
+  const jql = `issuetype in (Defect, Bug) AND Sprint = ${sprintId}${projectClause} ORDER BY created DESC`;
+
   const fields = [
     "summary", "status", "issuetype", "assignee", "reporter",
     "priority", "resolution", "duedate", "created", "updated",
@@ -232,9 +240,34 @@ export async function getDefectsByJQL(
     });
     return data.issues || [];
   } catch {
-    // Fallback: no defects (permission issue or no Defect issuetype)
     return [];
   }
+}
+
+/**
+ * For closed sprints: fetch the Jira Sprint Report to get the official
+ * completed / not-completed / removed breakdown per issue.
+ * Returns a map of issueKey → completion status.
+ */
+async function getSprintCompletionMap(
+  config: AppConfig,
+  sprint: JiraSprint
+): Promise<Map<string, "completed" | "not-completed" | "removed">> {
+  const map = new Map<string, "completed" | "not-completed" | "removed">();
+  if (!sprint.originBoardId) return map;
+  try {
+    const client = jiraClient(config);
+    const { data } = await client.get(
+      "/rest/greenhopper/1.0/rapid/charts/sprintreport",
+      { params: { rapidViewId: sprint.originBoardId, sprintId: sprint.id } }
+    );
+    for (const i of (data.contents?.completedIssues ?? [])) map.set(i.key, "completed");
+    for (const i of (data.contents?.issuesNotCompletedInCurrentSprint ?? [])) map.set(i.key, "not-completed");
+    for (const i of (data.contents?.puntedIssues ?? [])) map.set(i.key, "removed");
+  } catch {
+    // Sprint report API not available (permissions, older Jira version) — silently skip
+  }
+  return map;
 }
 
 // Fetch epic details by key
@@ -336,7 +369,8 @@ export async function getCapacityHistory(
 
 export async function getSprintReviewData(
   config: AppConfig,
-  sprintId: string
+  sprintId: string,
+  projectKeyOverride?: string
 ): Promise<{
   sprint: JiraSprint;
   epics: JiraEpic[];
@@ -354,8 +388,19 @@ export async function getSprintReviewData(
 
   const [sprint, issues] = await Promise.all([
     getSprint(config, sprintId),
-    getSprintIssues(config, sprintId, extraFields),
+    getSprintIssues(config, sprintId, extraFields, projectKeyOverride),
   ]);
+
+  // For closed sprints: augment each issue with its sprint-report completion status
+  if (sprint.state === "closed") {
+    const completionMap = await getSprintCompletionMap(config, sprint);
+    if (completionMap.size > 0) {
+      for (const issue of issues) {
+        const status = completionMap.get(issue.key);
+        if (status) issue.fields._completionStatus = status;
+      }
+    }
+  }
 
   // Index all sprint issues by key for parent-chain resolution
   const issueByKey = new Map<string, JiraIssue>();
@@ -384,10 +429,8 @@ export async function getSprintReviewData(
     return null;
   }
 
-  // Bucket 1: epicMap  — epicKey → { stories: storyKey[], orphans[] }
-  // Bucket 2: storyTaskMap — storyKey → task[]
-  const epicStoryMap  = new Map<string, JiraIssue[]>();   // epicKey → direct story issues
-  const storyTaskMap  = new Map<string, JiraIssue[]>();   // storyKey → task issues
+  const epicStoryMap  = new Map<string, JiraIssue[]>();
+  const storyTaskMap  = new Map<string, JiraIssue[]>();
   const noEpic: JiraIssue[] = [];
 
   for (const issue of issues) {
@@ -396,21 +439,16 @@ export async function getSprintReviewData(
     const parentKey  = issue.fields.parent?.key;
     const parentType = issue.fields.parent?.fields?.issuetype?.name?.toLowerCase();
 
-    // Is this issue a direct child of an Epic?
     const directEpicParent = parentType === "epic";
-    // Is this issue a child of a Story that is itself in the sprint?
     const storyParentInSprint = parentKey && issueByKey.has(parentKey) && !directEpicParent;
 
     if (directEpicParent && parentKey) {
-      // Story directly under an Epic
       if (!epicStoryMap.has(parentKey)) epicStoryMap.set(parentKey, []);
       epicStoryMap.get(parentKey)!.push(issue);
     } else if (storyParentInSprint && parentKey) {
-      // Task / sub-task under a Story
       if (!storyTaskMap.has(parentKey)) storyTaskMap.set(parentKey, []);
       storyTaskMap.get(parentKey)!.push(issue);
     } else {
-      // Fallback: try to resolve via epic-link fields
       const epicKey = resolveEpicKey(issue);
       if (epicKey) {
         if (!epicStoryMap.has(epicKey)) epicStoryMap.set(epicKey, []);
@@ -421,7 +459,6 @@ export async function getSprintReviewData(
     }
   }
 
-  // Fetch epic details for every unique epic key
   const epicKeyList = Array.from(epicStoryMap.keys());
   const epicDetails = await Promise.all(
     epicKeyList.map((key) =>
@@ -444,10 +481,8 @@ export async function getSprintReviewData(
     };
   });
 
-  // Fetch defects via dedicated JQL (more reliable than filtering sprint issues)
-  const defects = await getDefectsByJQL(config, sprintId, storyPointsFieldId);
+  const defects = await getDefectsByJQL(config, sprintId, storyPointsFieldId, projectKeyOverride);
 
-  // Capacity: current sprint + last N closed sprints from same board
   const capacityHistory = await getCapacityHistory(
     config,
     sprint,
@@ -458,6 +493,7 @@ export async function getSprintReviewData(
 
   return { sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId };
 }
+
 
 // ── Alert helpers ─────────────────────────────────────────────────────────────
 

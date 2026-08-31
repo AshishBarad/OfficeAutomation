@@ -76,6 +76,20 @@ export async function POST(req: NextRequest) {
             : existing.teams.defaultWebhookUrl,
       },
       alerts: body.alerts || existing.alerts,
+      // Azure AI — preserve apiKey if masked placeholder sent back
+      azureAi: {
+        ...existing.azureAi,
+        ...(body.azureAi || {}),
+        apiKey:
+          body.azureAi?.apiKey && !body.azureAi.apiKey.includes("•")
+            ? body.azureAi.apiKey
+            : existing.azureAi?.apiKey ?? "",
+      },
+      // Steering — simple merge, no secrets
+      steering: {
+        ...existing.steering,
+        ...(body.steering || {}),
+      },
     };
 
     writeConfig(merged);

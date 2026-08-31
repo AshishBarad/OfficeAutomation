@@ -5,6 +5,7 @@ import { getSprintReviewData } from "@/lib/jira";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const sprintId = searchParams.get("id");
+  const projectKey = searchParams.get("project") || undefined; // optional inline filter
 
   if (!sprintId) {
     return NextResponse.json(
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const data = await getSprintReviewData(config, sprintId);
+    const data = await getSprintReviewData(config, sprintId, projectKey);
     return NextResponse.json({ success: true, ...data });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
