@@ -1,8 +1,8 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import {
   FileText, ExternalLink, Loader2, CheckCircle,
-  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2, Filter,
+  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2,
 } from "lucide-react";
 
 interface JiraIssue {
@@ -36,6 +36,9 @@ interface SprintData {
   defects: JiraIssue[];
   capacityHistory: SprintCapacity[];
 }
+
+// Helper: extract project prefix from a ticket key (e.g. "ICE" from "ICE-1373")
+function projectOf(key: string) { return key.split("-")[0].toUpperCase(); }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -284,7 +287,7 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
 
 export default function SprintReviewPage() {
   const [sprintId, setSprintId] = useState("");
-  const [projectKey, setProjectKey] = useState(""); // inline project key filter
+  const [selectedProject, setSelectedProject] = useState(""); // "" = show all
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sprintData, setSprintData] = useState<SprintData | null>(null);
@@ -294,25 +297,11 @@ export default function SprintReviewPage() {
     epicCount: number; issueCount: number; defectCount: number; sprintCount: number;
   } | null>(null);
 
-  // Load default project key from config on mount
-  useEffect(() => {
-    fetch("/api/config")
-      .then(r => r.json())
-      .then(d => {
-        if (d.success && d.config?.jira?.defaultProject) {
-          setProjectKey(d.config.jira.defaultProject);
-        }
-      })
-      .catch(() => {});
-  }, []);
-
   async function handleFetch() {
     if (!sprintId.trim()) return;
-    setLoading(true); setError(null); setSprintData(null); setResult(null);
+    setLoading(true); setError(null); setSprintData(null); setResult(null); setSelectedProject("");
     try {
-      const params = new URLSearchParams({ id: sprintId.trim() });
-      if (projectKey.trim()) params.set("project", projectKey.trim().toUpperCase());
-      const res = await fetch(`/api/jira/sprint?${params}`);
+      const res = await fetch(`/api/jira/sprint?id=${sprintId.trim()}`);
       const data = await res.json();
       if (data.success) {
         setSprintData({ sprint: data.sprint, epics: data.epics, noEpic: data.noEpic, defects: data.defects, capacityHistory: data.capacityHistory });
@@ -342,8 +331,47 @@ export default function SprintReviewPage() {
     finally { setCreating(false); }
   }
 
-  const totalIssues = sprintData
-    ? sprintData.epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + sprintData.noEpic.length
+  // ── Derived: unique project prefixes from all fetched issues ─────────────────
+  const projectPrefixes = useMemo<string[]>(() => {
+    if (!sprintData) return [];
+    const prefixes = new Set<string>();
+    const addKey = (key: string) => prefixes.add(projectOf(key));
+    sprintData.epics.forEach(e => {
+      e.stories.forEach(st => { addKey(st.issue.key); st.subIssues.forEach(t => addKey(t.key)); });
+      e.orphanIssues.forEach(i => addKey(i.key));
+    });
+    sprintData.noEpic.forEach(i => addKey(i.key));
+    sprintData.defects.forEach(d => addKey(d.key));
+    return Array.from(prefixes).sort();
+  }, [sprintData]);
+
+  // ── Derived: client-side filtered view ───────────────────────────────────────
+  const view = useMemo(() => {
+    if (!sprintData) return null;
+    if (!selectedProject) return sprintData; // show all
+    const match = (key: string) => projectOf(key) === selectedProject;
+    const filteredEpics = sprintData.epics
+      .map(epic => ({
+        ...epic,
+        stories: epic.stories
+          .map(st => ({
+            ...st,
+            subIssues: st.subIssues.filter(t => match(t.key)),
+          }))
+          .filter(st => match(st.issue.key) || st.subIssues.length > 0),
+        orphanIssues: epic.orphanIssues.filter(i => match(i.key)),
+      }))
+      .filter(e => e.stories.length > 0 || e.orphanIssues.length > 0);
+    return {
+      ...sprintData,
+      epics: filteredEpics,
+      noEpic: sprintData.noEpic.filter(i => match(i.key)),
+      defects: sprintData.defects.filter(d => match(d.key)),
+    };
+  }, [sprintData, selectedProject]);
+
+  const totalIssues = view
+    ? view.epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + view.noEpic.length
     : 0;
 
   return (
@@ -356,7 +384,7 @@ export default function SprintReviewPage() {
         Enter a Jira Sprint ID to preview and generate a Confluence sprint review page.
       </p>
 
-      {/* Input */}
+      {/* Input row */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
         <div className="flex gap-3 items-end">
           {/* Sprint ID */}
@@ -371,15 +399,22 @@ export default function SprintReviewPage() {
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
-          {/* Project Key filter */}
-          <div className="w-36">
-            <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
-              <Filter size={12} className="text-gray-400" /> Project Key
+          {/* Project filter dropdown — populated after fetch */}
+          <div className="w-48">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Filter by Project
             </label>
-            <input type="text" placeholder="e.g. NWAP" value={projectKey}
-              onChange={(e) => setProjectKey(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && handleFetch()}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono uppercase" />
+            <select
+              value={selectedProject}
+              onChange={e => setSelectedProject(e.target.value)}
+              disabled={projectPrefixes.length === 0}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+            >
+              <option value="">All Projects ({projectPrefixes.length > 0 ? projectPrefixes.join(", ") : "…"})</option>
+              {projectPrefixes.map(p => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
           </div>
 
           <button onClick={handleFetch} disabled={loading || !sprintId.trim()}
@@ -388,9 +423,9 @@ export default function SprintReviewPage() {
             Fetch Sprint
           </button>
         </div>
-        {projectKey.trim() && (
-          <p className="mt-2 text-xs text-blue-600 flex items-center gap-1">
-            <Filter size={11} /> Filtering to <strong>{projectKey.trim().toUpperCase()}-*</strong> tickets only (issues + defects)
+        {selectedProject && (
+          <p className="mt-2 text-xs text-blue-600">
+            Showing <strong>{selectedProject}-*</strong> tickets only — <button className="underline" onClick={() => setSelectedProject("")}>clear filter</button>
           </p>
         )}
       </div>
@@ -415,23 +450,23 @@ export default function SprintReviewPage() {
         </div>
       )}
 
-      {sprintData && (
+      {view && (
         <>
           {/* Sprint meta bar */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-2 mb-1">
-                  <h2 className="text-lg font-bold text-gray-900">{sprintData.sprint.name}</h2>
-                  {sprintData.sprint.state === "closed" && (
+                  <h2 className="text-lg font-bold text-gray-900">{view.sprint.name}</h2>
+                  {view.sprint.state === "closed" && (
                     <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">📋 Closed Sprint</span>
                   )}
                 </div>
                 <div className="flex gap-4 text-sm text-gray-500">
-                  <span>📅 {fmt(sprintData.sprint.startDate)} → {fmt(sprintData.sprint.endDate)}</span>
-                  {statusBadge(sprintData.sprint.state)}
+                  <span>📅 {fmt(view.sprint.startDate)} → {fmt(view.sprint.endDate)}</span>
+                  {statusBadge(view.sprint.state)}
                 </div>
-                {sprintData.sprint.state === "closed" && (
+                {view.sprint.state === "closed" && (
                   <p className="mt-2 text-xs text-slate-500">
                     Sprint Result column shows official completion status from the Jira Sprint Report (✓ Done / ↩ Carried over / ✕ Removed).
                   </p>
@@ -439,9 +474,9 @@ export default function SprintReviewPage() {
               </div>
               <div className="flex gap-6 text-center text-sm">
                 {[
-                  { label: "Epics", val: sprintData.epics.length },
-                  { label: "Stories", val: sprintData.epics.reduce((s, e) => s + e.stories.length, 0) + sprintData.noEpic.length },
-                  { label: "Defects", val: sprintData.defects.length, red: true },
+                  { label: "Epics", val: view.epics.length },
+                  { label: "Stories", val: view.epics.reduce((s, e) => s + e.stories.length, 0) + view.noEpic.length },
+                  { label: "Defects", val: view.defects.length, red: true },
                 ].map(({ label, val, red }) => (
                   <div key={label}>
                     <div className={`text-xl font-bold ${red && val > 0 ? "text-red-600" : "text-gray-900"}`}>{val}</div>
@@ -454,18 +489,18 @@ export default function SprintReviewPage() {
 
           {/* Section: Epics */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Epics &amp; Stories</h3>
-          {sprintData.epics.map((epic) => <EpicSection key={epic.key} epic={epic} />)}
-          {sprintData.noEpic.length > 0 && (
-            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: sprintData.noEpic }} />
+          {view.epics.map((epic) => <EpicSection key={epic.key} epic={epic} />)}
+          {view.noEpic.length > 0 && (
+            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: view.noEpic }} />
           )}
 
           {/* Section: Defects */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-8 mb-3">Defects</h3>
-          <DefectsTable defects={sprintData.defects} />
+          <DefectsTable defects={view.defects} />
 
           {/* Section: Capacity */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-8 mb-3">Sprint Report</h3>
-          <CapacityTable history={sprintData.capacityHistory} />
+          <CapacityTable history={view.capacityHistory} />
 
           {/* Create button */}
           <div className="mt-8 flex justify-end">

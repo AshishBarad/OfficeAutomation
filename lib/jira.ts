@@ -196,8 +196,14 @@ export async function getSprintIssues(
     startAt += maxResults;
   }
 
-  // Filter by project — use override from UI, fall back to config default
-  const projectKey = (projectKeyOverride ?? config.jira.defaultProject)?.trim().toUpperCase();
+  // projectKeyOverride === undefined → fall back to config.jira.defaultProject
+  // projectKeyOverride === "" → no filter, fetch all tickets
+  // projectKeyOverride === "NWAP" → filter to NWAP-* only
+  const projectKey =
+    projectKeyOverride !== undefined
+      ? projectKeyOverride.trim().toUpperCase()
+      : config.jira.defaultProject?.trim().toUpperCase() ?? "";
+
   if (projectKey) {
     return allIssues.filter((i) =>
       i.key.toUpperCase().startsWith(`${projectKey}-`)
@@ -219,8 +225,11 @@ export async function getDefectsByJQL(
 ): Promise<JiraIssue[]> {
   const client = jiraClient(config);
 
-  // Apply the same project filter used for sprint issues
-  const projectKey = (projectKeyOverride ?? config.jira.defaultProject)?.trim();
+  // Same semantics: undefined → config default, "" → no filter, "PROJ" → filter
+  const projectKey =
+    projectKeyOverride !== undefined
+      ? projectKeyOverride.trim()
+      : config.jira.defaultProject?.trim() ?? "";
   const projectClause = projectKey ? ` AND project = "${projectKey}"` : "";
   const jql = `issuetype in (Defect, Bug) AND Sprint = ${sprintId}${projectClause} ORDER BY created DESC`;
 

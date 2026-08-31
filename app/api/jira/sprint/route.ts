@@ -5,7 +5,6 @@ import { getSprintReviewData } from "@/lib/jira";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const sprintId = searchParams.get("id");
-  const projectKey = searchParams.get("project") || undefined; // optional inline filter
 
   if (!sprintId) {
     return NextResponse.json(
@@ -23,7 +22,9 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const data = await getSprintReviewData(config, sprintId, projectKey);
+    // Pass "" as projectKeyOverride to fetch ALL tickets from the sprint.
+    // Project filtering is handled client-side via the dropdown on the Sprint Review page.
+    const data = await getSprintReviewData(config, sprintId, "");
     return NextResponse.json({ success: true, ...data });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
