@@ -56,11 +56,11 @@ function validateJira(jira: JiraConfig): Record<string, string> {
 
   if (jira.isCloud && !jira.email.trim()) errors.email = "Email is required for Cloud.";
   if (jira.serverAuthMode === "pat" || jira.isCloud) {
-    if (!jira.apiToken.trim() || jira.apiToken.includes("•")) errors.apiToken = "API / Personal Access Token is required.";
+    if (!jira.apiToken.trim()) errors.apiToken = "API / Personal Access Token is required.";
   }
   if (!jira.isCloud && jira.serverAuthMode === "basic") {
     if (!jira.username.trim()) errors.username = "Username is required.";
-    if (!jira.password.trim() || jira.password.includes("•")) errors.password = "Password is required.";
+    if (!jira.password.trim()) errors.password = "Password is required.";
   }
   return errors;
 }
@@ -73,11 +73,11 @@ function validateConfluence(conf: ConfluenceConfig, isCloud: boolean, serverAuth
 
   if (isCloud && !conf.email.trim()) errors.email = "Email is required for Cloud.";
   if (serverAuthMode === "pat" || isCloud) {
-    if (!conf.apiToken.trim() || conf.apiToken.includes("•")) errors.apiToken = "API / Personal Access Token is required.";
+    if (!conf.apiToken.trim()) errors.apiToken = "API / Personal Access Token is required.";
   }
   if (!isCloud && serverAuthMode === "basic") {
     if (!conf.username.trim()) errors.username = "Username is required.";
-    if (!conf.password.trim() || conf.password.includes("•")) errors.password = "Password is required.";
+    if (!conf.password.trim()) errors.password = "Password is required.";
   }
   if (!conf.spaceKey.trim()) errors.spaceKey = "Space Key is required.";
   return errors;
