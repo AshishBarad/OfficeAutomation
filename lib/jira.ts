@@ -254,29 +254,71 @@ export async function getDefectsByJQL(
 }
 
 /**
- * For closed sprints: fetch the Jira Sprint Report to get the official
- * completed / not-completed / removed breakdown per issue.
- * Returns a map of issueKey → completion status.
+ * For closed sprints: call the Sprint Report to get the COMPLETE list of issue keys
+ * (completed + not-completed + removed from sprint). The Agile sprint-issues endpoint
+ * only returns the final state; the sprint report is the authoritative source.
+ * Returns an array of { key, completionStatus } for every issue that ever touched the sprint.
  */
-async function getSprintCompletionMap(
+async function getSprintReportData(
   config: AppConfig,
   sprint: JiraSprint
-): Promise<Map<string, "completed" | "not-completed" | "removed">> {
-  const map = new Map<string, "completed" | "not-completed" | "removed">();
-  if (!sprint.originBoardId) return map;
+): Promise<{ key: string; completionStatus: "completed" | "not-completed" | "removed" }[]> {
+  if (!sprint.originBoardId) return [];
   try {
     const client = jiraClient(config);
     const { data } = await client.get(
       "/rest/greenhopper/1.0/rapid/charts/sprintreport",
       { params: { rapidViewId: sprint.originBoardId, sprintId: sprint.id } }
     );
-    for (const i of (data.contents?.completedIssues ?? [])) map.set(i.key, "completed");
-    for (const i of (data.contents?.issuesNotCompletedInCurrentSprint ?? [])) map.set(i.key, "not-completed");
-    for (const i of (data.contents?.puntedIssues ?? [])) map.set(i.key, "removed");
+    const result: { key: string; completionStatus: "completed" | "not-completed" | "removed" }[] = [];
+    for (const i of (data.contents?.completedIssues ?? []))
+      result.push({ key: i.key, completionStatus: "completed" });
+    for (const i of (data.contents?.issuesNotCompletedInCurrentSprint ?? []))
+      result.push({ key: i.key, completionStatus: "not-completed" });
+    for (const i of (data.contents?.puntedIssues ?? []))
+      result.push({ key: i.key, completionStatus: "removed" });
+    return result;
   } catch {
-    // Sprint report API not available (permissions, older Jira version) — silently skip
+    // Sprint report API not available — fall back to Agile sprint issues API
+    return [];
   }
-  return map;
+}
+
+/**
+ * Fetch full issue details for a specific list of keys via JQL.
+ * Batches 50 keys at a time to stay within URL limits.
+ */
+async function fetchIssuesByKeys(
+  config: AppConfig,
+  keys: string[],
+  extraFields: string[] = []
+): Promise<JiraIssue[]> {
+  if (keys.length === 0) return [];
+  const client = jiraClient(config);
+  const baseFields = [
+    "summary", "status", "issuetype", "assignee", "reporter",
+    "description", "parent",
+    "customfield_10014", "customfield_10008",
+    "customfield_10016", "customfield_10028", "customfield_10004",
+    "priority", "resolution", "duedate", "created", "updated",
+  ];
+  const fieldList = [...new Set([...baseFields, ...extraFields])].join(",");
+
+  const allIssues: JiraIssue[] = [];
+  // Batch in groups of 50 to avoid JQL length limits
+  for (let i = 0; i < keys.length; i += 50) {
+    const batch = keys.slice(i, i + 50);
+    const jql = `key in (${batch.join(",")}) ORDER BY created DESC`;
+    try {
+      const { data } = await client.get("/rest/api/2/search", {
+        params: { jql, maxResults: 50, fields: fieldList },
+      });
+      allIssues.push(...(data.issues || []));
+    } catch {
+      // skip failed batch silently
+    }
+  }
+  return allIssues;
 }
 
 // Fetch epic details by key
@@ -395,20 +437,44 @@ export async function getSprintReviewData(
     Boolean
   ) as string[];
 
-  const [sprint, issues] = await Promise.all([
+  const [sprint, agileSideIssues] = await Promise.all([
     getSprint(config, sprintId),
     getSprintIssues(config, sprintId, extraFields, projectKeyOverride),
   ]);
 
-  // For closed sprints: augment each issue with its sprint-report completion status
+  let issues: JiraIssue[] = agileSideIssues;
+
+  // For closed sprints: the Agile sprint-issues endpoint only returns issues that
+  // survived to the sprint's final state. The Sprint Report is the authoritative
+  // source — it includes completed, not-completed, AND removed/punted issues.
   if (sprint.state === "closed") {
-    const completionMap = await getSprintCompletionMap(config, sprint);
-    if (completionMap.size > 0) {
-      for (const issue of issues) {
+    const reportItems = await getSprintReportData(config, sprint);
+    if (reportItems.length > 0) {
+      // Build completion status map
+      const completionMap = new Map(reportItems.map(i => [i.key, i.completionStatus]));
+
+      // Fetch full issue details for all keys from the sprint report
+      const allReportKeys = reportItems.map(i => i.key);
+      const reportIssues = await fetchIssuesByKeys(config, allReportKeys, extraFields);
+
+      // Apply project filter (same logic as getSprintIssues)
+      const projectKey =
+        projectKeyOverride !== undefined
+          ? projectKeyOverride.trim().toUpperCase()
+          : config.jira.defaultProject?.trim().toUpperCase() ?? "";
+      const filteredIssues = projectKey
+        ? reportIssues.filter(i => i.key.toUpperCase().startsWith(`${projectKey}-`))
+        : reportIssues;
+
+      // Augment each issue with its sprint-report completion status
+      for (const issue of filteredIssues) {
         const status = completionMap.get(issue.key);
         if (status) issue.fields._completionStatus = status;
       }
+
+      issues = filteredIssues;
     }
+    // If sprint report returned nothing (API unavailable), keep agileSideIssues
   }
 
   // Index all sprint issues by key for parent-chain resolution
