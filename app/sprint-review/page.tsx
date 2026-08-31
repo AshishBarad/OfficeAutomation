@@ -1,8 +1,8 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import {
   FileText, ExternalLink, Loader2, CheckCircle,
-  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2,
+  AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2, ChevronUp,
 } from "lucide-react";
 
 interface JiraIssue {
@@ -20,6 +20,11 @@ interface JiraIssue {
     created: string;
     updated: string;
     _completionStatus?: "completed" | "not-completed" | "removed";
+    // Story point custom fields (vary by Jira instance)
+    customfield_10016?: number | null;
+    customfield_10028?: number | null;
+    customfield_10004?: number | null;
+    [key: string]: unknown;
   };
 }
 
@@ -35,10 +40,29 @@ interface SprintData {
   noEpic: JiraIssue[];
   defects: JiraIssue[];
   capacityHistory: SprintCapacity[];
+  storyPointsFieldId?: string | null;
 }
 
-// Helper: extract project prefix from a ticket key (e.g. "ICE" from "ICE-1373")
+// ── Client-side helpers ───────────────────────────────────────────────────────
+
+// Extract project prefix from a ticket key (e.g. "ICE" from "ICE-1373")
 function projectOf(key: string) { return key.split("-")[0].toUpperCase(); }
+
+// Client-side story points — mirrors lib/jira.ts getStoryPoints
+function getStoryPoints(issue: JiraIssue, spFieldId?: string | null): number {
+  const f = issue.fields as Record<string, unknown>;
+  if (spFieldId) {
+    const val = Number(f[spFieldId]);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return Number(f.customfield_10016 ?? f.customfield_10028 ?? f.customfield_10004 ?? 0) || 0;
+}
+
+function isDoneStatus(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === "done" || s === "resolved" || s === "closed" ||
+    s === "won't fix" || s === "wont fix";
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -238,10 +262,22 @@ function DefectsTable({ defects }: { defects: JiraIssue[] }) {
   );
 }
 
-function CapacityTable({ history }: { history: SprintCapacity[] }) {
+function CapacityTable({
+  history,
+  filteredSP,
+}: {
+  history: SprintCapacity[];
+  filteredSP?: { planned: number; delivered: number; ratio: string };
+}) {
   const [open, setOpen] = useState(true);
   const current = history[history.length - 1];
   if (!current) return null;
+
+  // Use client-recalculated numbers if a filter is active
+  const displayPlanned  = filteredSP ? filteredSP.planned  : current.plannedPoints;
+  const displayDelivered = filteredSP ? filteredSP.delivered : current.deliveredPoints;
+  const displayRatio    = filteredSP ? filteredSP.ratio    : current.completionRatio;
+
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
       <button onClick={() => setOpen(!open)}
@@ -250,6 +286,9 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
           {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           <BarChart2 size={15} className="text-blue-500" />
           <span className="font-semibold text-gray-800 text-sm">Sprint Report — Completion Ratio</span>
+          {filteredSP && (
+            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">filtered view</span>
+          )}
         </div>
         <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">current sprint</span>
       </button>
@@ -271,9 +310,9 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
                   {current.sprintName}
                   <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">current</span>
                 </td>
-                <td className="px-4 py-2 text-center text-gray-700">{current.plannedPoints > 0 ? current.plannedPoints : "—"}</td>
-                <td className="px-4 py-2 text-center text-gray-700">{current.deliveredPoints > 0 ? current.deliveredPoints : "—"}</td>
-                <td className="px-4 py-2 text-center">{completionBadge(current.completionRatio)}</td>
+                <td className="px-4 py-2 text-center text-gray-700">{displayPlanned > 0 ? displayPlanned : "—"}</td>
+                <td className="px-4 py-2 text-center text-gray-700">{displayDelivered > 0 ? displayDelivered : "—"}</td>
+                <td className="px-4 py-2 text-center">{completionBadge(displayRatio)}</td>
               </tr>
             </tbody>
           </table>
@@ -287,7 +326,10 @@ function CapacityTable({ history }: { history: SprintCapacity[] }) {
 
 export default function SprintReviewPage() {
   const [sprintId, setSprintId] = useState("");
-  const [selectedProject, setSelectedProject] = useState(""); // "" = show all
+  const [selectedProject, setSelectedProject] = useState("");   // "" = show all
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(new Set()); // empty = all
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const statusDropdownRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sprintData, setSprintData] = useState<SprintData | null>(null);
@@ -297,14 +339,30 @@ export default function SprintReviewPage() {
     epicCount: number; issueCount: number; defectCount: number; sprintCount: number;
   } | null>(null);
 
+  // Close status dropdown when clicking outside
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+        setStatusDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   async function handleFetch() {
     if (!sprintId.trim()) return;
-    setLoading(true); setError(null); setSprintData(null); setResult(null); setSelectedProject("");
+    setLoading(true); setError(null); setSprintData(null); setResult(null);
+    setSelectedProject(""); setSelectedStatuses(new Set());
     try {
       const res = await fetch(`/api/jira/sprint?id=${sprintId.trim()}`);
       const data = await res.json();
       if (data.success) {
-        setSprintData({ sprint: data.sprint, epics: data.epics, noEpic: data.noEpic, defects: data.defects, capacityHistory: data.capacityHistory });
+        setSprintData({
+          sprint: data.sprint, epics: data.epics, noEpic: data.noEpic,
+          defects: data.defects, capacityHistory: data.capacityHistory,
+          storyPointsFieldId: data.storyPointsFieldId ?? null,
+        });
       } else {
         setError(data.error || "Failed to fetch sprint data");
       }
@@ -345,30 +403,75 @@ export default function SprintReviewPage() {
     return Array.from(prefixes).sort();
   }, [sprintData]);
 
-  // ── Derived: client-side filtered view ───────────────────────────────────────
+  // ── Derived: all unique statuses from fetched data ────────────────────────────
+  const statusOptions = useMemo<string[]>(() => {
+    if (!sprintData) return [];
+    const statuses = new Set<string>();
+    const addIssue = (i: JiraIssue) => statuses.add(i.fields.status.name);
+    sprintData.epics.forEach(e => {
+      e.stories.forEach(st => { addIssue(st.issue); st.subIssues.forEach(addIssue); });
+      e.orphanIssues.forEach(addIssue);
+    });
+    sprintData.noEpic.forEach(addIssue);
+    sprintData.defects.forEach(addIssue);
+    return Array.from(statuses).sort();
+  }, [sprintData]);
+
+  function toggleStatus(status: string) {
+    setSelectedStatuses(prev => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status); else next.add(status);
+      return next;
+    });
+  }
+
+  // ── Derived: client-side filtered view (project + status) ─────────────────────
   const view = useMemo(() => {
     if (!sprintData) return null;
-    if (!selectedProject) return sprintData; // show all
-    const match = (key: string) => projectOf(key) === selectedProject;
+    const matchProject = (key: string) => !selectedProject || projectOf(key) === selectedProject;
+    const matchStatus  = (status: string) => selectedStatuses.size === 0 || selectedStatuses.has(status);
+    const filterIssue  = (i: JiraIssue) => matchProject(i.key) && matchStatus(i.fields.status.name);
+
     const filteredEpics = sprintData.epics
       .map(epic => ({
         ...epic,
         stories: epic.stories
-          .map(st => ({
-            ...st,
-            subIssues: st.subIssues.filter(t => match(t.key)),
-          }))
-          .filter(st => match(st.issue.key) || st.subIssues.length > 0),
-        orphanIssues: epic.orphanIssues.filter(i => match(i.key)),
+          .map(st => ({ ...st, subIssues: st.subIssues.filter(filterIssue) }))
+          .filter(st => filterIssue(st.issue) || st.subIssues.length > 0),
+        orphanIssues: epic.orphanIssues.filter(filterIssue),
       }))
       .filter(e => e.stories.length > 0 || e.orphanIssues.length > 0);
+
     return {
       ...sprintData,
       epics: filteredEpics,
-      noEpic: sprintData.noEpic.filter(i => match(i.key)),
-      defects: sprintData.defects.filter(d => match(d.key)),
+      noEpic: sprintData.noEpic.filter(filterIssue),
+      defects: sprintData.defects.filter(i => matchProject(i.key) && matchStatus(i.fields.status.name)),
     };
-  }, [sprintData, selectedProject]);
+  }, [sprintData, selectedProject, selectedStatuses]);
+
+  // ── Derived: recalculate story points for the filtered view ───────────────────
+  const filteredCapacity = useMemo(() => {
+    if (!view || !sprintData) return undefined;
+    // Only override when a filter is active
+    const hasFilter = !!selectedProject || selectedStatuses.size > 0;
+    if (!hasFilter) return undefined;
+
+    const allIssues: JiraIssue[] = [];
+    view.epics.forEach(e => {
+      e.stories.forEach(st => { allIssues.push(st.issue); allIssues.push(...st.subIssues); });
+      allIssues.push(...e.orphanIssues);
+    });
+    allIssues.push(...view.noEpic);
+
+    const nonEpic = allIssues.filter(i => i.fields.issuetype.name !== "Epic");
+    const spFieldId = sprintData.storyPointsFieldId;
+    const planned   = nonEpic.reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
+    const delivered = nonEpic.filter(i => isDoneStatus(i.fields.status.name))
+                             .reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
+    const ratio = planned > 0 ? Math.round((delivered / planned) * 100) + "%" : "N/A";
+    return { planned, delivered, ratio };
+  }, [view, sprintData, selectedProject, selectedStatuses]);
 
   const totalIssues = view
     ? view.epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + view.noEpic.length
@@ -386,9 +489,9 @@ export default function SprintReviewPage() {
 
       {/* Input row */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
-        <div className="flex gap-3 items-end">
+        <div className="flex gap-3 items-end flex-wrap">
           {/* Sprint ID */}
-          <div className="flex-1">
+          <div className="flex-1 min-w-48">
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Sprint ID
               <span className="ml-2 text-xs text-gray-400 font-normal">(Jira board URL → sprintId=…)</span>
@@ -400,21 +503,79 @@ export default function SprintReviewPage() {
           </div>
 
           {/* Project filter dropdown — populated after fetch */}
-          <div className="w-48">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Filter by Project
-            </label>
+          <div className="w-44">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Project</label>
             <select
               value={selectedProject}
               onChange={e => setSelectedProject(e.target.value)}
               disabled={projectPrefixes.length === 0}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
             >
-              <option value="">All Projects ({projectPrefixes.length > 0 ? projectPrefixes.join(", ") : "…"})</option>
+              <option value="">All Projects</option>
               {projectPrefixes.map(p => (
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
+          </div>
+
+          {/* Status multi-select — checkbox dropdown */}
+          <div className="w-48 relative" ref={statusDropdownRef}>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Status</label>
+            <button
+              type="button"
+              disabled={statusOptions.length === 0}
+              onClick={() => setStatusDropdownOpen(o => !o)}
+              className="w-full flex items-center justify-between border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+            >
+              <span className="truncate text-left">
+                {selectedStatuses.size === 0
+                  ? "All Statuses"
+                  : `${selectedStatuses.size} selected`}
+              </span>
+              {statusOptions.length > 0 && (
+                statusDropdownOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+              )}
+            </button>
+
+            {statusDropdownOpen && statusOptions.length > 0 && (
+              <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg py-1 max-h-64 overflow-y-auto">
+                {/* Select all / Clear */}
+                <div className="flex gap-2 px-3 py-1.5 border-b border-gray-100">
+                  <button
+                    className="text-xs text-blue-600 underline"
+                    onClick={() => setSelectedStatuses(new Set())}
+                  >All</button>
+                  <span className="text-gray-300">|</span>
+                  <button
+                    className="text-xs text-blue-600 underline"
+                    onClick={() => setSelectedStatuses(new Set(statusOptions))}
+                  >None</button>
+                </div>
+                {statusOptions.map(status => {
+                  const checked = selectedStatuses.size === 0 || selectedStatuses.has(status);
+                  return (
+                    <label key={status} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-sm">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          // If currently "all selected" (empty set), clicking a checkbox
+                          // means "deselect everything except the clicked one"
+                          if (selectedStatuses.size === 0) {
+                            const allExcept = new Set(statusOptions.filter(s => s !== status));
+                            setSelectedStatuses(allExcept);
+                          } else {
+                            toggleStatus(status);
+                          }
+                        }}
+                        className="rounded"
+                      />
+                      <span className="text-gray-700 truncate">{status}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <button onClick={handleFetch} disabled={loading || !sprintId.trim()}
@@ -423,9 +584,18 @@ export default function SprintReviewPage() {
             Fetch Sprint
           </button>
         </div>
-        {selectedProject && (
-          <p className="mt-2 text-xs text-blue-600">
-            Showing <strong>{selectedProject}-*</strong> tickets only — <button className="underline" onClick={() => setSelectedProject("")}>clear filter</button>
+
+        {/* Active filter hints */}
+        {(selectedProject || selectedStatuses.size > 0) && (
+          <p className="mt-2 text-xs text-blue-600 flex items-center gap-2 flex-wrap">
+            {selectedProject && <span>Project: <strong>{selectedProject}-*</strong></span>}
+            {selectedStatuses.size > 0 && (
+              <span>Status: <strong>{Array.from(selectedStatuses).join(", ")}</strong></span>
+            )}
+            <span>·</span>
+            <button className="underline" onClick={() => { setSelectedProject(""); setSelectedStatuses(new Set()); }}>
+              clear all filters
+            </button>
           </p>
         )}
       </div>
@@ -500,7 +670,7 @@ export default function SprintReviewPage() {
 
           {/* Section: Capacity */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-8 mb-3">Sprint Report</h3>
-          <CapacityTable history={view.capacityHistory} />
+          <CapacityTable history={view.capacityHistory} filteredSP={filteredCapacity} />
 
           {/* Create button */}
           <div className="mt-8 flex justify-end">
