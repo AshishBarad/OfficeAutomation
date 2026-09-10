@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     // Pass "" as projectKeyOverride to fetch ALL tickets from the sprint.
     // Project filtering is handled client-side via the dropdown on the Sprint Review page.
     const data = await getSprintReviewData(config, sprintId, "");
-    return NextResponse.json({ success: true, ...data });
+    return NextResponse.json({ success: true, ...data, jiraBaseUrl: config.jira.baseUrl });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const status =

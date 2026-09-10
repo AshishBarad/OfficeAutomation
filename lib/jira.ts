@@ -65,13 +65,14 @@ export interface SprintCapacity {
 export interface JiraFieldMeta {
   epicLinkFieldId: string | null;
   storyPointsFieldId: string | null;
+  teamFieldId: string | null;
 }
 
 // ── Field discovery ───────────────────────────────────────────────────────────
 
 /**
  * Fetches all Jira field definitions and returns the custom field IDs for
- * "Epic Link" and "Story Points" as used by this specific Jira instance.
+ * "Epic Link", "Story Points", and "Team" as used by this specific Jira instance.
  * Fails gracefully — returns nulls if the API call fails.
  */
 export async function discoverJiraFields(config: AppConfig): Promise<JiraFieldMeta> {
@@ -80,6 +81,7 @@ export async function discoverJiraFields(config: AppConfig): Promise<JiraFieldMe
     const { data } = await client.get("/rest/api/2/field");
     let epicLinkFieldId: string | null = null;
     let storyPointsFieldId: string | null = null;
+    let teamFieldId: string | null = null;
 
     for (const field of data as Array<{ id: string; name: string }>) {
       const name = field.name.toLowerCase();
@@ -92,10 +94,13 @@ export async function discoverJiraFields(config: AppConfig): Promise<JiraFieldMe
       ) {
         storyPointsFieldId = field.id;
       }
+      if (name === "team" && !teamFieldId) {
+        teamFieldId = field.id;
+      }
     }
-    return { epicLinkFieldId, storyPointsFieldId };
+    return { epicLinkFieldId, storyPointsFieldId, teamFieldId };
   } catch {
-    return { epicLinkFieldId: null, storyPointsFieldId: null };
+    return { epicLinkFieldId: null, storyPointsFieldId: null, teamFieldId: null };
   }
 }
 
@@ -429,11 +434,12 @@ export async function getSprintReviewData(
   defects: JiraIssue[];
   capacityHistory: SprintCapacity[];
   storyPointsFieldId: string | null;
+  teamFieldId: string | null;
 }> {
-  // Discover which custom fields carry "Epic Link" and "Story Points" in this instance
-  const { epicLinkFieldId, storyPointsFieldId } = await discoverJiraFields(config);
+  // Discover which custom fields carry "Epic Link", "Story Points", and "Team" in this instance
+  const { epicLinkFieldId, storyPointsFieldId, teamFieldId } = await discoverJiraFields(config);
 
-  const extraFields = [epicLinkFieldId, storyPointsFieldId].filter(
+  const extraFields = [epicLinkFieldId, storyPointsFieldId, teamFieldId].filter(
     Boolean
   ) as string[];
 
@@ -566,7 +572,7 @@ export async function getSprintReviewData(
     storyPointsFieldId
   );
 
-  return { sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId };
+  return { sprint, epics, noEpic, defects, capacityHistory, storyPointsFieldId, teamFieldId };
 }
 
 

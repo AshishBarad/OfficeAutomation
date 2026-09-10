@@ -41,6 +41,8 @@ interface SprintData {
   defects: JiraIssue[];
   capacityHistory: SprintCapacity[];
   storyPointsFieldId?: string | null;
+  teamFieldId?: string | null;
+  jiraBaseUrl?: string | null;
 }
 
 // ── Client-side helpers ───────────────────────────────────────────────────────
@@ -112,20 +114,55 @@ function fmt(iso: string | null | undefined) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function EpicSection({ epic }: { epic: Epic }) {
+function TicketLink({ issueKey, jiraBaseUrl }: { issueKey: string; jiraBaseUrl?: string | null }) {
+  if (!jiraBaseUrl) return <span className="font-semibold">{issueKey}</span>;
+  return (
+    <a
+      href={`${jiraBaseUrl.replace(/\/$/, "")}/browse/${issueKey}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-semibold hover:underline"
+      onClick={e => e.stopPropagation()}
+    >
+      {issueKey}
+    </a>
+  );
+}
+
+function EpicSection({ epic, jiraBaseUrl, spFieldId }: {
+  epic: Epic;
+  jiraBaseUrl?: string | null;
+  spFieldId?: string | null;
+}) {
   const [open, setOpen] = useState(true);
   const totalIssues = epic.stories.reduce((s, st) => s + 1 + st.subIssues.length, 0) + epic.orphanIssues.length;
+
+  // Total SP across all non-Epic issues in this epic (stories + tasks + orphans)
+  const totalSP = [
+    ...epic.stories.flatMap(st => [st.issue, ...st.subIssues]),
+    ...epic.orphanIssues,
+  ].reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
+
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden mb-3">
       <button onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between px-5 py-3 bg-gray-50 hover:bg-gray-100 transition text-left">
         <div className="flex items-center gap-3">
           {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <span className="font-semibold text-gray-800 text-sm">{epic.key}</span>
+          <span className="font-semibold text-gray-800 text-sm">
+            <TicketLink issueKey={epic.key} jiraBaseUrl={jiraBaseUrl} />
+          </span>
           <span className="text-gray-600 text-sm">{epic.summary}</span>
           {statusBadge(epic.status)}
         </div>
-        <span className="text-xs text-gray-400">{totalIssues} issue{totalIssues !== 1 ? "s" : ""}</span>
+        <div className="flex items-center gap-3">
+          {totalSP > 0 && (
+            <span className="text-xs bg-indigo-100 text-indigo-700 font-semibold px-2 py-0.5 rounded-full">
+              {totalSP} SP
+            </span>
+          )}
+          <span className="text-xs text-gray-400">{totalIssues} issue{totalIssues !== 1 ? "s" : ""}</span>
+        </div>
       </button>
 
       {open && (
@@ -141,57 +178,76 @@ function EpicSection({ epic }: { epic: Epic }) {
                     <th className="px-4 py-2 text-left">Sprint Result</th>
                     <th className="px-4 py-2 text-left">Assignee</th>
                     <th className="px-4 py-2 text-left">Type</th>
+                    <th className="px-4 py-2 text-center">SP</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {epic.stories.map((story, si) => (
-                    <>
-                      {/* Story row */}
-                      <tr key={story.issue.key} className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                        <td className="px-4 py-3 font-medium text-blue-600 text-xs">
-                          {story.issue.key}<br />
-                          <span className="text-gray-700 font-normal">{story.issue.fields.summary}</span>
-                        </td>
-                        <td className="px-4 py-2">{statusBadge(story.issue.fields.status.name)}</td>
-                        <td className="px-4 py-2">{completionStatusBadge(story.issue.fields._completionStatus)}</td>
-                        <td className="px-4 py-2 text-gray-700 text-xs">
-                          {story.issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
-                        </td>
-                        <td className="px-4 py-2 text-gray-500 text-xs">{story.issue.fields.issuetype.name}</td>
-                      </tr>
-                      {/* Task rows */}
-                      {story.subIssues.map((task) => (
-                        <tr key={task.key} className="bg-blue-50 border-l-4 border-blue-200">
-                          <td className="pl-8 pr-4 py-2 text-xs text-blue-700">
-                            <span className="text-gray-400 mr-1">↳</span>
-                            <span className="font-medium">{task.key}</span><br />
-                            <span className="text-gray-600 font-normal">{task.fields.summary}</span>
+                  {epic.stories.map((story, si) => {
+                    const storySP = getStoryPoints(story.issue, spFieldId);
+                    return (
+                      <>
+                        {/* Story row */}
+                        <tr key={story.issue.key} className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                          <td className="px-4 py-3 font-medium text-blue-600 text-xs">
+                            <TicketLink issueKey={story.issue.key} jiraBaseUrl={jiraBaseUrl} /><br />
+                            <span className="text-gray-700 font-normal">{story.issue.fields.summary}</span>
                           </td>
-                          <td className="px-4 py-2">{statusBadge(task.fields.status.name)}</td>
-                          <td className="px-4 py-2">{completionStatusBadge(task.fields._completionStatus)}</td>
+                          <td className="px-4 py-2">{statusBadge(story.issue.fields.status.name)}</td>
+                          <td className="px-4 py-2">{completionStatusBadge(story.issue.fields._completionStatus)}</td>
                           <td className="px-4 py-2 text-gray-700 text-xs">
-                            {task.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
+                            {story.issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                           </td>
-                          <td className="px-4 py-2 text-gray-500 text-xs">{task.fields.issuetype.name}</td>
+                          <td className="px-4 py-2 text-gray-500 text-xs">{story.issue.fields.issuetype.name}</td>
+                          <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
+                            {storySP > 0 ? storySP : <span className="text-gray-300">—</span>}
+                          </td>
                         </tr>
-                      ))}
-                    </>
-                  ))}
-                  {epic.orphanIssues.map((issue, i) => (
-                    <tr key={issue.key} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                      <td className="px-4 py-3 font-medium text-blue-600 text-xs">
-                        {issue.key}<br />
-                        <span className="text-gray-700 font-normal">{issue.fields.summary}</span>
-                      </td>
-                      <td className="px-4 py-2">{statusBadge(issue.fields.status.name)}</td>
-                      <td className="px-4 py-2">{completionStatusBadge(issue.fields._completionStatus)}</td>
-                      <td className="px-4 py-2 text-gray-700 text-xs">
-                        {issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
-                      </td>
-                      <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
-                      <td className="px-4 py-2 text-gray-500 text-xs">{issue.fields.issuetype.name}</td>
-                    </tr>
-                  ))}
+                        {/* Task rows */}
+                        {story.subIssues.map((task) => {
+                          const taskSP = getStoryPoints(task, spFieldId);
+                          return (
+                            <tr key={task.key} className="bg-blue-50 border-l-4 border-blue-200">
+                              <td className="pl-8 pr-4 py-2 text-xs text-blue-700">
+                                <span className="text-gray-400 mr-1">↳</span>
+                                <TicketLink issueKey={task.key} jiraBaseUrl={jiraBaseUrl} /><br />
+                                <span className="text-gray-600 font-normal">{task.fields.summary}</span>
+                              </td>
+                              <td className="px-4 py-2">{statusBadge(task.fields.status.name)}</td>
+                              <td className="px-4 py-2">{completionStatusBadge(task.fields._completionStatus)}</td>
+                              <td className="px-4 py-2 text-gray-700 text-xs">
+                                {task.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
+                              </td>
+                              <td className="px-4 py-2 text-gray-500 text-xs">{task.fields.issuetype.name}</td>
+                              <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
+                                {taskSP > 0 ? taskSP : <span className="text-gray-300">—</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </>
+                    );
+                  })}
+                  {epic.orphanIssues.map((issue, i) => {
+                    const issueSP = getStoryPoints(issue, spFieldId);
+                    return (
+                      <tr key={issue.key} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                        <td className="px-4 py-3 font-medium text-blue-600 text-xs">
+                          <TicketLink issueKey={issue.key} jiraBaseUrl={jiraBaseUrl} /><br />
+                          <span className="text-gray-700 font-normal">{issue.fields.summary}</span>
+                        </td>
+                        <td className="px-4 py-2">{statusBadge(issue.fields.status.name)}</td>
+                        <td className="px-4 py-2">{completionStatusBadge(issue.fields._completionStatus)}</td>
+                        <td className="px-4 py-2 text-gray-700 text-xs">
+                          {issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
+                        </td>
+                        <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
+                        <td className="px-4 py-2 text-gray-500 text-xs">{issue.fields.issuetype.name}</td>
+                        <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
+                          {issueSP > 0 ? issueSP : <span className="text-gray-300">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}
@@ -201,7 +257,7 @@ function EpicSection({ epic }: { epic: Epic }) {
   );
 }
 
-function DefectsTable({ defects }: { defects: JiraIssue[] }) {
+function DefectsTable({ defects, jiraBaseUrl }: { defects: JiraIssue[]; jiraBaseUrl?: string | null }) {
   const [open, setOpen] = useState(true);
   if (defects.length === 0) {
     return (
@@ -242,7 +298,9 @@ function DefectsTable({ defects }: { defects: JiraIssue[] }) {
             <tbody>
               {defects.map((issue, i) => (
                 <tr key={issue.key} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                  <td className="px-3 py-2 font-medium text-blue-600 whitespace-nowrap">{issue.key}</td>
+                  <td className="px-3 py-2 font-medium text-blue-600 whitespace-nowrap">
+                    <TicketLink issueKey={issue.key} jiraBaseUrl={jiraBaseUrl} />
+                  </td>
                   <td className="px-3 py-2 text-gray-700 max-w-xs">{issue.fields.summary}</td>
                   <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{fmt(issue.fields.created)}</td>
                   <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{fmt(issue.fields.updated)}</td>
@@ -330,6 +388,7 @@ export default function SprintReviewPage() {
   const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(new Set()); // empty = all
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
+  const [selectedTeam, setSelectedTeam] = useState("");          // "" = show all
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sprintData, setSprintData] = useState<SprintData | null>(null);
@@ -353,7 +412,7 @@ export default function SprintReviewPage() {
   async function handleFetch() {
     if (!sprintId.trim()) return;
     setLoading(true); setError(null); setSprintData(null); setResult(null);
-    setSelectedProject(""); setSelectedStatuses(new Set());
+    setSelectedProject(""); setSelectedStatuses(new Set()); setSelectedTeam("");
     try {
       const res = await fetch(`/api/jira/sprint?id=${sprintId.trim()}`);
       const data = await res.json();
@@ -362,6 +421,8 @@ export default function SprintReviewPage() {
           sprint: data.sprint, epics: data.epics, noEpic: data.noEpic,
           defects: data.defects, capacityHistory: data.capacityHistory,
           storyPointsFieldId: data.storyPointsFieldId ?? null,
+          teamFieldId: data.teamFieldId ?? null,
+          jiraBaseUrl: data.jiraBaseUrl ?? null,
         });
       } else {
         setError(data.error || "Failed to fetch sprint data");
@@ -425,12 +486,47 @@ export default function SprintReviewPage() {
     });
   }
 
-  // ── Derived: client-side filtered view (project + status) ─────────────────────
+
+  // ── Derived: all unique teams from fetched data ───────────────────────────────
+  const teamOptions = useMemo<string[]>(() => {
+    if (!sprintData) return [];
+    const teams = new Set<string>();
+    const addIssue = (i: JiraIssue) => {
+      const fieldId = sprintData.teamFieldId;
+      if (!fieldId) return;
+      const raw = (i.fields as Record<string, unknown>)[fieldId];
+      if (!raw) return;
+      const name = typeof raw === "string" ? raw :
+        (typeof raw === "object" && raw !== null && "name" in raw)
+          ? String((raw as { name: unknown }).name) : "";
+      if (name) teams.add(name);
+    };
+    sprintData.epics.forEach(e => {
+      e.stories.forEach(st => { addIssue(st.issue); st.subIssues.forEach(addIssue); });
+      e.orphanIssues.forEach(addIssue);
+    });
+    sprintData.noEpic.forEach(addIssue);
+    sprintData.defects.forEach(addIssue);
+    return Array.from(teams).sort();
+  }, [sprintData]);
+
+  // ── Derived: client-side filtered view (project + status + team) ──────────────
   const view = useMemo(() => {
     if (!sprintData) return null;
     const matchProject = (key: string) => !selectedProject || projectOf(key) === selectedProject;
     const matchStatus  = (status: string) => selectedStatuses.size === 0 || selectedStatuses.has(status);
-    const filterIssue  = (i: JiraIssue) => matchProject(i.key) && matchStatus(i.fields.status.name);
+    const matchTeam    = (issue: JiraIssue) => {
+      if (!selectedTeam) return true;
+      const fieldId = sprintData.teamFieldId;
+      if (!fieldId) return true;
+      const raw = (issue.fields as Record<string, unknown>)[fieldId];
+      if (!raw) return false;
+      const name = typeof raw === "string" ? raw :
+        (typeof raw === "object" && raw !== null && "name" in raw)
+          ? String((raw as { name: unknown }).name) : "";
+      return name === selectedTeam;
+    };
+    const filterIssue  = (i: JiraIssue) => matchProject(i.key) && matchStatus(i.fields.status.name) && matchTeam(i);
 
     const filteredEpics = sprintData.epics
       .map(epic => ({
@@ -446,15 +542,15 @@ export default function SprintReviewPage() {
       ...sprintData,
       epics: filteredEpics,
       noEpic: sprintData.noEpic.filter(filterIssue),
-      defects: sprintData.defects.filter(i => matchProject(i.key) && matchStatus(i.fields.status.name)),
+      defects: sprintData.defects.filter(i => matchProject(i.key) && matchStatus(i.fields.status.name) && matchTeam(i)),
     };
-  }, [sprintData, selectedProject, selectedStatuses]);
+  }, [sprintData, selectedProject, selectedStatuses, selectedTeam]);
 
   // ── Derived: recalculate story points for the filtered view ───────────────────
   const filteredCapacity = useMemo(() => {
     if (!view || !sprintData) return undefined;
     // Only override when a filter is active
-    const hasFilter = !!selectedProject || selectedStatuses.size > 0;
+    const hasFilter = !!selectedProject || selectedStatuses.size > 0 || !!selectedTeam;
     if (!hasFilter) return undefined;
 
     const allIssues: JiraIssue[] = [];
@@ -471,7 +567,7 @@ export default function SprintReviewPage() {
                              .reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
     const ratio = planned > 0 ? Math.round((delivered / planned) * 100) + "%" : "N/A";
     return { planned, delivered, ratio };
-  }, [view, sprintData, selectedProject, selectedStatuses]);
+  }, [view, sprintData, selectedProject, selectedStatuses, selectedTeam]);
 
   const totalIssues = view
     ? view.epics.reduce((s, e) => s + e.stories.reduce((ss, st) => ss + 1 + st.subIssues.length, 0) + e.orphanIssues.length, 0) + view.noEpic.length
@@ -578,6 +674,22 @@ export default function SprintReviewPage() {
             )}
           </div>
 
+          {/* Team filter dropdown — populated after fetch */}
+          <div className="w-44">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Team</label>
+            <select
+              value={selectedTeam}
+              onChange={e => setSelectedTeam(e.target.value)}
+              disabled={teamOptions.length === 0}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+            >
+              <option value="">All Teams</option>
+              {teamOptions.map(t => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+
           <button onClick={handleFetch} disabled={loading || !sprintId.trim()}
             className="flex items-center gap-2 bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition h-[38px] self-end">
             {loading && <Loader2 size={15} className="animate-spin" />}
@@ -586,14 +698,15 @@ export default function SprintReviewPage() {
         </div>
 
         {/* Active filter hints */}
-        {(selectedProject || selectedStatuses.size > 0) && (
+        {(selectedProject || selectedStatuses.size > 0 || selectedTeam) && (
           <p className="mt-2 text-xs text-blue-600 flex items-center gap-2 flex-wrap">
             {selectedProject && <span>Project: <strong>{selectedProject}-*</strong></span>}
             {selectedStatuses.size > 0 && (
               <span>Status: <strong>{Array.from(selectedStatuses).join(", ")}</strong></span>
             )}
+            {selectedTeam && <span>Team: <strong>{selectedTeam}</strong></span>}
             <span>·</span>
-            <button className="underline" onClick={() => { setSelectedProject(""); setSelectedStatuses(new Set()); }}>
+            <button className="underline" onClick={() => { setSelectedProject(""); setSelectedStatuses(new Set()); setSelectedTeam(""); }}>
               clear all filters
             </button>
           </p>
@@ -659,14 +772,14 @@ export default function SprintReviewPage() {
 
           {/* Section: Epics */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Epics &amp; Stories</h3>
-          {view.epics.map((epic) => <EpicSection key={epic.key} epic={epic} />)}
+          {view.epics.map((epic) => <EpicSection key={epic.key} epic={epic} jiraBaseUrl={view.jiraBaseUrl} spFieldId={view.storyPointsFieldId} />)}
           {view.noEpic.length > 0 && (
-            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: view.noEpic }} />
+            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: view.noEpic }} jiraBaseUrl={view.jiraBaseUrl} spFieldId={view.storyPointsFieldId} />
           )}
 
           {/* Section: Defects */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-8 mb-3">Defects</h3>
-          <DefectsTable defects={view.defects} />
+          <DefectsTable defects={view.defects} jiraBaseUrl={view.jiraBaseUrl} />
 
           {/* Section: Capacity */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-8 mb-3">Sprint Report</h3>
