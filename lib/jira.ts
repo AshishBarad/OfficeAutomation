@@ -350,7 +350,8 @@ function calcCapacity(
   spFieldId?: string | null
 ): SprintCapacity {
   const nonEpicIssues = issues.filter(
-    (i) => i.fields.issuetype.name !== "Epic"
+    (i) => i.fields.issuetype.name !== "Epic" &&
+            i.fields._completionStatus !== "removed"
   );
   const plannedPoints = nonEpicIssues.reduce(
     (sum, i) => sum + getStoryPoints(i, spFieldId),

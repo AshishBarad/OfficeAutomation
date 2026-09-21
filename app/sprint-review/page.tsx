@@ -137,11 +137,12 @@ function EpicSection({ epic, jiraBaseUrl, spFieldId }: {
   const [open, setOpen] = useState(true);
   const totalIssues = epic.stories.reduce((s, st) => s + 1 + st.subIssues.length, 0) + epic.orphanIssues.length;
 
-  // Total SP across all non-Epic issues in this epic (stories + tasks + orphans)
+  // Total SP across all non-Epic, non-removed issues in this epic (stories + tasks + orphans)
   const totalSP = [
     ...epic.stories.flatMap(st => [st.issue, ...st.subIssues]),
     ...epic.orphanIssues,
-  ].reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
+  ].filter(i => i.fields._completionStatus !== "removed")
+   .reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
 
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden mb-3">
@@ -560,7 +561,10 @@ export default function SprintReviewPage() {
     });
     allIssues.push(...view.noEpic);
 
-    const nonEpic = allIssues.filter(i => i.fields.issuetype.name !== "Epic");
+    const nonEpic = allIssues.filter(
+      i => i.fields.issuetype.name !== "Epic" &&
+           i.fields._completionStatus !== "removed"
+    );
     const spFieldId = sprintData.storyPointsFieldId;
     const planned   = nonEpic.reduce((sum, i) => sum + getStoryPoints(i, spFieldId), 0);
     const delivered = nonEpic.filter(i => isDoneStatus(i.fields.status.name))
