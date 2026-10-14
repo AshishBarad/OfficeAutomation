@@ -2,14 +2,28 @@ import { NextResponse } from "next/server";
 import { readConfig, writeConfig } from "@/lib/config";
 import { searchNewIssues } from "@/lib/jira";
 import { sendTeamsAlert } from "@/lib/teams";
+import { humanizeError } from "@/lib/api-error";
 
 // POST — trigger a manual poll or called by the built-in scheduler
 export async function POST() {
   const config = readConfig();
 
-  if (!config.jira.baseUrl || !config.jira.apiToken) {
+  if (!config.jira.baseUrl) {
     return NextResponse.json(
-      { success: false, error: "Jira not configured" },
+      { success: false, error: "Jira Base URL is not configured. Go to the Config page and fill in your Jira settings." },
+      { status: 400 }
+    );
+  }
+
+  const hasCredentials = config.jira.isCloud
+    ? config.jira.apiToken
+    : config.jira.serverAuthMode === "pat"
+    ? config.jira.apiToken
+    : config.jira.username && config.jira.password;
+
+  if (!hasCredentials) {
+    return NextResponse.json(
+      { success: false, error: "Jira credentials are not configured. Go to the Config page and fill in your API token or username/password." },
       { status: 400 }
     );
   }
@@ -43,15 +57,9 @@ export async function POST() {
       );
 
       if (issues.length > 0) {
-        const webhookUrl =
-          rule.teamsWebhookUrl || config.teams.defaultWebhookUrl;
+        const webhookUrl = rule.teamsWebhookUrl || config.teams.defaultWebhookUrl;
         if (webhookUrl) {
-          await sendTeamsAlert(
-            webhookUrl,
-            issues,
-            rule.name,
-            config.jira.baseUrl
-          );
+          await sendTeamsAlert(webhookUrl, issues, rule.name, config.jira.baseUrl);
         }
         results.push({ rule: rule.name, issuesFound: issues.length });
       } else {
@@ -61,7 +69,7 @@ export async function POST() {
       results.push({
         rule: rule.name,
         issuesFound: 0,
-        error: String(err),
+        error: humanizeError(err, `Rule "${rule.name}"`),
       });
     }
   }

@@ -2,10 +2,12 @@
 # ============================================================
 #  Jira / Confluence Automation — One-click setup & launcher
 #  Usage:
-#    First time:  bash setup.sh
-#    Next time:   bash setup.sh          (skips install, just starts)
-#    Dev mode:    bash setup.sh --dev
-#    Stop server: bash setup.sh --stop
+#    First time:        bash setup.sh
+#    Next time:         bash setup.sh          (skips install, just starts)
+#    Dev mode:          bash setup.sh --dev
+#    Stop server:       bash setup.sh --stop
+#    Install service:   bash setup.sh --install-service
+#    Uninstall service: bash setup.sh --uninstall-service
 # ============================================================
 
 set -e
@@ -30,6 +32,10 @@ PIDFILE=".server.pid"
 PORTFILE=".server.port"
 DEV_MODE=false
 
+# ── launchd service constants ─────────────────────────────────
+PLIST_LABEL="com.officeautomation.server"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+
 # ── Find a free port ─────────────────────────────────────────
 # Tries ports in range 3100-3999 and returns the first free one.
 find_free_port() {
@@ -43,7 +49,18 @@ find_free_port() {
 }
 
 # ── Stop server ──────────────────────────────────────────────
+# Handles both launchd-managed and legacy bare-process servers.
 stop_server() {
+  # Prefer launchd bootout if the service is registered
+  if launchctl list "$PLIST_LABEL" &>/dev/null 2>&1; then
+    info "Stopping launchd service…"
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    rm -f "$PLIST_PATH" "$PIDFILE" "$PORTFILE"
+    success "Service stopped and unregistered from launchd"
+    info "The server will NOT auto-restart. Run setup.sh to start again."
+    return
+  fi
+  # Fallback: legacy PID-file kill
   if [ -f "$PIDFILE" ]; then
     PID=$(cat "$PIDFILE")
     PORT_USED=$(cat "$PORTFILE" 2>/dev/null || echo "unknown")
@@ -56,15 +73,111 @@ stop_server() {
       rm -f "$PIDFILE" "$PORTFILE"
     fi
   else
-    warn "No .server.pid file found — server may not be running"
+    warn "No running server found (neither launchd service nor .server.pid)"
   fi
+}
+
+# ── Install launchd service ───────────────────────────────────
+# Writes a LaunchAgent plist and bootstraps it for the current
+# user session. The server will auto-start at login and survive
+# sleep/wake cycles.
+install_service() {
+  local install_dir
+  install_dir="$(pwd)"
+  local wrapper="${install_dir}/launchd-wrapper.sh"
+
+  if [ ! -f "$wrapper" ]; then
+    error "launchd-wrapper.sh not found in ${install_dir}. Cannot install service."
+  fi
+  chmod +x "$wrapper"
+
+  mkdir -p "$HOME/Library/LaunchAgents"
+
+  # Write the plist (heredoc avoids quoting issues)
+  cat > "$PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique service name registered with launchd -->
+    <key>Label</key>
+    <string>${PLIST_LABEL}</string>
+
+    <!-- Run launchd-wrapper.sh which picks a port and exec's npm start -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${wrapper}</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>${install_dir}</string>
+
+    <!-- Start when the user logs in -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart automatically if the server crashes or the machine wakes from sleep -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Redirect stdout/stderr to log files for debugging -->
+    <key>StandardOutPath</key>
+    <string>${install_dir}/.server.log</string>
+    <key>StandardErrorPath</key>
+    <string>${install_dir}/.server.error.log</string>
+
+    <!-- Provide a sensible PATH since launchd has a minimal environment -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+  # Unload any previous version first so the plist changes take effect
+  if launchctl list "$PLIST_LABEL" &>/dev/null 2>&1; then
+    info "Previous service found — reloading…"
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    sleep 1
+  fi
+
+  launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+  success "launchd service registered: ${PLIST_LABEL}"
+  success "The server now auto-starts on login and restarts after sleep/wake."
+}
+
+# ── Uninstall launchd service ─────────────────────────────────
+uninstall_service() {
+  if launchctl list "$PLIST_LABEL" &>/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/${PLIST_LABEL}" 2>/dev/null || true
+    success "launchd service stopped"
+  else
+    warn "Service was not running in launchd"
+  fi
+
+  if [ -f "$PLIST_PATH" ]; then
+    rm -f "$PLIST_PATH"
+    success "Plist removed: ${PLIST_PATH}"
+  else
+    warn "Plist not found — may already be uninstalled"
+  fi
+
+  rm -f "$PIDFILE" "$PORTFILE"
+  success "Service fully uninstalled"
 }
 
 # ── Parse flags ──────────────────────────────────────────────
 for arg in "$@"; do
   case $arg in
-    --dev)  DEV_MODE=true ;;
-    --stop) stop_server; exit 0 ;;
+    --dev)               DEV_MODE=true ;;
+    --stop)              stop_server;       exit 0 ;;
+    --install-service)   install_service;   exit 0 ;;
+    --uninstall-service) uninstall_service; exit 0 ;;
   esac
 done
 
@@ -119,13 +232,12 @@ else
   info "They will be saved to: $CONFIG_STORE"
 fi
 
-# ── Step 4: Pick a free port ─────────────────────────────────
-step "Finding available port"
-PORT=$(find_free_port)
-success "Using port $PORT"
-
-# ── Step 5: Build + Start ────────────────────────────────────
+# ── Step 4: Build + Start ────────────────────────────────────
 if [ "$DEV_MODE" = true ]; then
+  step "Finding available port"
+  PORT=$(find_free_port)
+  success "Using port $PORT"
+
   step "Starting in development mode (hot reload)"
   info "Port: $PORT  —  Press Ctrl+C to stop"
   echo ""
@@ -135,16 +247,18 @@ else
   info "Building optimised bundle..."
   npm run build --silent
 
-  step "Starting production server"
-  npm start -- --port "$PORT" &
-  SERVER_PID=$!
-  echo "$SERVER_PID" > "$PIDFILE"
-  echo "$PORT"       > "$PORTFILE"
+  step "Registering system service (launchd)"
+  install_service
 
-  # Wait until the server is actually responding (up to 15s)
+  # Wait for the wrapper to write the port file and the server to respond
   echo -ne "${BLUE}ℹ${NC}  Waiting for server"
-  for i in $(seq 1 30); do
-    if curl -s "http://localhost:${PORT}" -o /dev/null 2>/dev/null; then
+  PORT=""
+  for i in $(seq 1 60); do
+    # Read port once it's been written by the wrapper
+    if [ -z "$PORT" ] && [ -f "$PORTFILE" ]; then
+      PORT=$(cat "$PORTFILE" 2>/dev/null || echo "")
+    fi
+    if [ -n "$PORT" ] && curl -s "http://localhost:${PORT}" -o /dev/null 2>/dev/null; then
       break
     fi
     echo -n "."
@@ -152,7 +266,14 @@ else
   done
   echo ""
 
-  success "Server running on port $PORT (PID $SERVER_PID)"
+  if [ -z "$PORT" ]; then
+    warn "Server did not respond in time. Check .server.error.log for details."
+    warn "Try: tail -f $(pwd)/.server.error.log"
+    exit 1
+  fi
+
+  success "Server running on port $PORT"
+  success "It will auto-restart after sleep/wake and survive laptop lock."
 
   URL="http://localhost:${PORT}"
   # Pad URL line to fill box width

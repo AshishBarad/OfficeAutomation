@@ -280,10 +280,13 @@ function buildEpicsSection(
     })
     .join("");
 
+  const noEpicNonDefects = noEpic.filter(
+    (i) => i.fields.issuetype.name !== "Defect" && i.fields.issuetype.name !== "Bug"
+  );
   const noEpicSection =
-    noEpic.length > 0
+    noEpicNonDefects.length > 0
       ? `${separator}<h2>Other Issues (No Epic)</h2>${storyTable(
-          noEpic.map((issue) => ({ issue, subIssues: [] })),
+          noEpicNonDefects.map((issue) => ({ issue, subIssues: [] })),
           [],
           null,
           sprintId
@@ -291,6 +294,19 @@ function buildEpicsSection(
       : "";
 
   return epicSections + noEpicSection;
+}
+
+/** Renders a Confluence colored-status macro */
+function statusMacro(status: string): string {
+  const color = statusColor(status);
+  return `<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">${color}</ac:parameter><ac:parameter ac:name="title">${escapeHtml(status)}</ac:parameter></ac:structured-macro>`;
+}
+
+/** Renders a Confluence colored-status macro for priority */
+function priorityMacro(priority: string | undefined): string {
+  if (!priority) return "—";
+  const color = priorityColor(priority);
+  return `<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">${color}</ac:parameter><ac:parameter ac:name="title">${escapeHtml(priority)}</ac:parameter></ac:structured-macro>`;
 }
 
 function buildDefectsSection(
@@ -315,8 +331,8 @@ function buildDefectsSection(
           <td>${formatDateShort(issue.fields.duedate)}</td>
           <td>${escapeHtml(issue.fields.assignee?.displayName || "—")}</td>
           <td>${escapeHtml(issue.fields.reporter?.displayName || "—")}</td>
-          <td>${escapeHtml(issue.fields.priority?.name || "—")}</td>
-          <td>${escapeHtml(issue.fields.status.name)}</td>
+          <td>${priorityMacro(issue.fields.priority?.name)}</td>
+          <td>${statusMacro(issue.fields.status.name)}</td>
           <td>${escapeHtml(issue.fields.resolution?.name || "Unresolved")}</td>
         </tr>`;
     })

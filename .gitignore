@@ -46,3 +46,5 @@ config.json
 # runtime files created by setup.sh
 .server.pid
 .server.port
+.server.log
+.server*.log

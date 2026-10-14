@@ -28,8 +28,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, rule: newRule });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { success: false, error: String(err) },
+      { success: false, error: `Failed to save alert rule: ${msg}` },
       { status: 500 }
     );
   }
@@ -44,7 +45,7 @@ export async function PUT(req: NextRequest) {
     const idx = config.alerts.rules.findIndex((r) => r.id === body.id);
     if (idx === -1) {
       return NextResponse.json(
-        { success: false, error: "Rule not found" },
+        { success: false, error: `Alert rule not found (id: ${body.id}). It may have been deleted — refresh the page.` },
         { status: 404 }
       );
     }
@@ -57,8 +58,9 @@ export async function PUT(req: NextRequest) {
       rule: config.alerts.rules[idx],
     });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { success: false, error: String(err) },
+      { success: false, error: `Failed to update alert rule: ${msg}` },
       { status: 500 }
     );
   }
@@ -69,6 +71,12 @@ export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: "Missing rule id — cannot delete." },
+        { status: 400 }
+      );
+    }
     const config = readConfig();
 
     config.alerts.rules = config.alerts.rules.filter((r) => r.id !== id);
@@ -76,8 +84,9 @@ export async function DELETE(req: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { success: false, error: String(err) },
+      { success: false, error: `Failed to delete alert rule: ${msg}` },
       { status: 500 }
     );
   }

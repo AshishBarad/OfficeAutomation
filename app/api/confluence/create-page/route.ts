@@ -2,19 +2,41 @@ import { NextRequest, NextResponse } from "next/server";
 import { readConfig, getConfluenceAuthHeader } from "@/lib/config";
 import { getSprintReviewData } from "@/lib/jira";
 import { createSprintReviewPage, findExistingPage, updateSprintReviewPage } from "@/lib/confluence";
+import { humanizeError } from "@/lib/api-error";
 import axios from "axios";
 
 export async function POST(req: NextRequest) {
   try {
     const { sprintId } = await req.json();
     if (!sprintId) {
-      return NextResponse.json({ success: false, error: "Missing sprintId" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Missing sprint ID. Fetch a sprint first before creating a Confluence page." },
+        { status: 400 }
+      );
     }
 
     const config = readConfig();
-    if (!config.confluence.baseUrl || (!config.confluence.apiToken && !config.confluence.password)) {
+
+    if (!config.confluence.baseUrl) {
       return NextResponse.json(
-        { success: false, error: "Confluence not configured. Please check Config page." },
+        { success: false, error: "Confluence Base URL is not configured. Go to the Config page and fill in your Confluence settings." },
+        { status: 400 }
+      );
+    }
+    if (!config.confluence.spaceKey) {
+      return NextResponse.json(
+        { success: false, error: "Confluence Space Key is not configured. Go to the Config page and set your space key." },
+        { status: 400 }
+      );
+    }
+    const hasCredentials = config.jira.isCloud
+      ? config.confluence.apiToken
+      : config.jira.serverAuthMode === "pat"
+      ? config.confluence.apiToken
+      : config.confluence.username && config.confluence.password;
+    if (!hasCredentials) {
+      return NextResponse.json(
+        { success: false, error: "Confluence credentials are not configured. Go to the Config page and fill in your API token or username/password." },
         { status: 400 }
       );
     }
@@ -54,7 +76,7 @@ export async function POST(req: NextRequest) {
       defectCount: defects.length, sprintCount: capacityHistory.length,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = humanizeError(err, "Confluence");
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
 }

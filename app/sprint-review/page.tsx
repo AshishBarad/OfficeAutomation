@@ -777,8 +777,8 @@ export default function SprintReviewPage() {
           {/* Section: Epics */}
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Epics &amp; Stories</h3>
           {view.epics.map((epic) => <EpicSection key={epic.key} epic={epic} jiraBaseUrl={view.jiraBaseUrl} spFieldId={view.storyPointsFieldId} />)}
-          {view.noEpic.length > 0 && (
-            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: view.noEpic }} jiraBaseUrl={view.jiraBaseUrl} spFieldId={view.storyPointsFieldId} />
+          {view.noEpic.filter(i => i.fields.issuetype.name !== "Defect" && i.fields.issuetype.name !== "Bug").length > 0 && (
+            <EpicSection epic={{ key: "—", summary: "Issues without an Epic", status: "N/A", stories: [], orphanIssues: view.noEpic.filter(i => i.fields.issuetype.name !== "Defect" && i.fields.issuetype.name !== "Bug") }} jiraBaseUrl={view.jiraBaseUrl} spFieldId={view.storyPointsFieldId} />
           )}
 
           {/* Section: Defects */}

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { readConfig } from "@/lib/config";
 import { sendTeamsAlert } from "@/lib/teams";
 import { JiraIssue } from "@/lib/jira";
+import { humanizeError } from "@/lib/api-error";
 
 export async function POST() {
   const config = readConfig();
@@ -34,7 +35,11 @@ export async function POST() {
     await sendTeamsAlert(webhookUrl, [fakeIssue], "Test Alert Rule", config.jira.baseUrl || "https://jira.example.com");
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+    const base = humanizeError(err, "MS Teams");
+    // Add actionable hint for common Teams webhook failures
+    const hint = base.includes("400") || base.includes("403")
+      ? " Verify the webhook URL is still active in your Teams channel settings."
+      : "";
+    return NextResponse.json({ success: false, error: base + hint }, { status: 500 });
   }
 }
