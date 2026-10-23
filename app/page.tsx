@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { FileText, Bell, Settings, ArrowRight, Zap } from "lucide-react";
+import { FileText, Bell, Settings, ArrowRight, Zap, Brain } from "lucide-react";
 
 const cards = [
   {
@@ -13,9 +13,18 @@ const cards = [
     cta: "Generate Page",
   },
   {
+    href: "/steering",
+    icon: Brain,
+    color: "bg-purple-600",
+    title: "Steering Agenda",
+    description:
+      "Analyze multiple sprints using AI to generate structured steering committee agendas and publish to Confluence.",
+    cta: "Create Agenda",
+  },
+  {
     href: "/alerts",
     icon: Bell,
-    color: "bg-purple-500",
+    color: "bg-indigo-500",
     title: "Teams Alerts",
     description:
       "Configure watch rules to send MS Teams notifications when new Jira tickets are created or assigned.",
@@ -34,7 +43,7 @@ const cards = [
 
 export default function DashboardPage() {
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="p-8 max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-10">
         <div className="flex items-center gap-3 mb-2">
@@ -65,6 +74,13 @@ export default function DashboardPage() {
             to generate a Confluence page from any Sprint ID
           </li>
           <li>
+            Use{" "}
+            <Link href="/steering" className="underline font-medium">
+              Steering Agenda
+            </Link>{" "}
+            to analyze multiple sprints and generate an AI-powered meeting agenda
+          </li>
+          <li>
             Set up{" "}
             <Link href="/alerts" className="underline font-medium">
               Teams Alerts
@@ -75,22 +91,24 @@ export default function DashboardPage() {
       </div>
 
       {/* Feature cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {cards.map(({ href, icon: Icon, color, title, description, cta }) => (
           <Link
             key={href}
             href={href}
-            className="group bg-white border border-gray-200 rounded-xl p-6 hover:shadow-lg hover:border-blue-300 transition-all"
+            className="group bg-white border border-gray-200 rounded-xl p-6 hover:shadow-lg hover:border-blue-300 transition-all flex flex-col justify-between"
           >
-            <div
-              className={`w-12 h-12 ${color} rounded-lg flex items-center justify-center mb-4`}
-            >
-              <Icon className="text-white" size={22} />
+            <div>
+              <div
+                className={`w-12 h-12 ${color} rounded-lg flex items-center justify-center mb-4`}
+              >
+                <Icon className="text-white" size={22} />
+              </div>
+              <h3 className="font-semibold text-gray-900 text-lg mb-2">
+                {title}
+              </h3>
+              <p className="text-gray-500 text-sm mb-4">{description}</p>
             </div>
-            <h3 className="font-semibold text-gray-900 text-lg mb-2">
-              {title}
-            </h3>
-            <p className="text-gray-500 text-sm mb-4">{description}</p>
             <span className="text-blue-600 text-sm font-medium flex items-center gap-1 group-hover:gap-2 transition-all">
               {cta} <ArrowRight size={14} />
             </span>

@@ -285,6 +285,20 @@ export default function SteeringPage() {
     ws[i] = { ...ws[i], ...patch };
     setContent({ ...content, otherWorkstreams: ws });
   }
+  function removeWorkstream(i: number) {
+    if (!content) return;
+    setContent({
+      ...content,
+      otherWorkstreams: content.otherWorkstreams.filter((_, idx) => idx !== i),
+    });
+  }
+  function addWorkstream() {
+    if (!content) return;
+    setContent({
+      ...content,
+      otherWorkstreams: [...content.otherWorkstreams, { title: "", bullets: [""] }],
+    });
+  }
 
   // Epics already in deep dives — excluded from picker
   const usedEpicKeys = new Set(content?.epicDeepDives.map((d) => d.epicKey) ?? []);
@@ -631,47 +645,73 @@ export default function SteeringPage() {
 
           {/* Other Workstreams */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
-              {content.epicDeepDives.length + 2}. Other Major Workstreams
-            </h3>
-            {content.otherWorkstreams.map((ws, i) => (
-              <div key={i} className="mb-4">
-                <EditableText
-                  value={ws.title}
-                  onChange={(v) => updateWorkstream(i, { title: v })}
-                  className="font-semibold mb-2"
-                />
-                <div className="ml-4 space-y-1 mt-2">
-                  {ws.bullets.map((b, j) => (
-                    <div key={j} className="flex items-center gap-2">
-                      <span className="text-gray-400">•</span>
-                      <div className="flex-1">
-                        <EditableText
-                          value={b}
-                          onChange={(v) => {
-                            const bullets = [...ws.bullets];
-                            bullets[j] = v;
-                            updateWorkstream(i, { bullets });
-                          }}
-                        />
-                      </div>
-                      <button
-                        onClick={() => updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })}
-                        className="text-gray-300 hover:text-red-500"
-                      >
-                        <Trash2 size={13} />
-                      </button>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+                {content.epicDeepDives.length + 2}. Other Major Workstreams
+              </h3>
+              <button
+                onClick={addWorkstream}
+                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+              >
+                <Plus size={12} /> Add workstream
+              </button>
+            </div>
+            {content.otherWorkstreams.length === 0 ? (
+              <p className="text-xs text-gray-400 italic py-2">
+                No workstreams remaining.
+              </p>
+            ) : (
+              content.otherWorkstreams.map((ws, i) => (
+                <div key={i} className="mb-5 last:mb-0">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="flex-1">
+                      <EditableText
+                        value={ws.title}
+                        onChange={(v) => updateWorkstream(i, { title: v })}
+                        className="font-semibold"
+                      />
                     </div>
-                  ))}
-                  <button
-                    onClick={() => updateWorkstream(i, { bullets: [...ws.bullets, ""] })}
-                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                  >
-                    <Plus size={12} /> Add bullet
-                  </button>
+                    <button
+                      onClick={() => removeWorkstream(i)}
+                      className="text-gray-300 hover:text-red-500 p-1 transition flex-shrink-0"
+                      title="Delete entire workstream"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <div className="ml-4 space-y-1 mt-2">
+                    {ws.bullets.map((b, j) => (
+                      <div key={j} className="flex items-center gap-2">
+                        <span className="text-gray-400">•</span>
+                        <div className="flex-1">
+                          <EditableText
+                            value={b}
+                            onChange={(v) => {
+                              const bullets = [...ws.bullets];
+                              bullets[j] = v;
+                              updateWorkstream(i, { bullets });
+                            }}
+                          />
+                        </div>
+                        <button
+                          onClick={() => updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })}
+                          className="text-gray-300 hover:text-red-500"
+                          title="Delete bullet"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => updateWorkstream(i, { bullets: [...ws.bullets, ""] })}
+                      className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      <Plus size={12} /> Add bullet
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
 
           {/* Collaboration */}
