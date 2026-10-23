@@ -26,5 +26,9 @@
   "alerts": {
     "rules": [],
     "pollIntervalMinutes": 15
+  },
+  "openAi": {
+    "apiKey": "",
+    "model": "gpt-4o"
   }
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readConfig } from '@/lib/config';
 import { getSprintReviewData } from '@/lib/jira';
-import { analyzeSprintDataForSteering, SprintBundle } from '@/lib/azure-ai';
+import { analyzeSprintDataForSteering, getActiveAiProvider, SprintBundle } from '@/lib/ai-router';
 import { humanizeError } from '@/lib/api-error';
 
 export async function POST(req: NextRequest) {
@@ -16,7 +16,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Pre-flight: check Jira config
     if (!config.jira.baseUrl) {
       return NextResponse.json(
         { success: false, error: 'Jira Base URL is not configured. Go to the Config page and fill in your Jira settings.' },
@@ -24,10 +23,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Pre-flight: check Azure AI config
-    if (!config.azureAi.endpoint || !config.azureAi.apiKey || !config.azureAi.deploymentName) {
+    if (!getActiveAiProvider(config)) {
       return NextResponse.json(
-        { success: false, error: 'Azure AI is not configured. Go to the Config page and fill in your Azure OpenAI endpoint, API key, and deployment name.' },
+        {
+          success: false,
+          error: 'No AI provider is configured. Go to the Config page and fill in either an OpenAI API key (ChatGPT) or Azure OpenAI credentials.',
+        },
         { status: 400 }
       );
     }
@@ -41,7 +42,18 @@ export async function POST(req: NextRequest) {
     );
 
     const content = await analyzeSprintDataForSteering(config, bundles);
-    return NextResponse.json({ success: true, content });
+
+    // Collect all unique epics across all sprints for the epic selector
+    const epicMap = new Map<string, string>();
+    for (const bundle of bundles) {
+      for (const epic of bundle.epics) {
+        if (!epicMap.has(epic.key)) epicMap.set(epic.key, epic.summary);
+      }
+    }
+    const epics = Array.from(epicMap.entries()).map(([key, name]) => ({ key, name }));
+    const sprintNames = bundles.map((b) => b.sprint.name);
+
+    return NextResponse.json({ success: true, content, epics, sprintNames });
   } catch (err: unknown) {
     const msg = humanizeError(err, 'Steering Analysis');
     return NextResponse.json({ success: false, error: msg }, { status: 500 });

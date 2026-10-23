@@ -85,6 +85,15 @@ export async function POST(req: NextRequest) {
             ? body.azureAi.apiKey
             : existing.azureAi?.apiKey ?? "",
       },
+      // OpenAI — preserve apiKey if masked placeholder sent back
+      openAi: {
+        ...existing.openAi,
+        ...(body.openAi || {}),
+        apiKey:
+          body.openAi?.apiKey && !body.openAi.apiKey.includes("•")
+            ? body.openAi.apiKey
+            : existing.openAi?.apiKey ?? "",
+      },
       // Steering — simple merge, no secrets
       steering: {
         ...existing.steering,

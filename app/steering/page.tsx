@@ -1,10 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   FileText, Loader2, CheckCircle, AlertCircle, ExternalLink,
-  Plus, Trash2, Brain, ChevronDown, ChevronRight,
+  Plus, Trash2, Brain, ChevronDown, ChevronRight, Sparkles, ChevronUp,
+  GripVertical,
 } from "lucide-react";
-import { SteeringContent, SummaryRow, EpicDeepDive, Workstream, StatusType } from "@/lib/azure-ai";
+import type { SteeringContent, SummaryRow, EpicDeepDive, Workstream, StatusType } from "@/lib/ai-types";
 
 const STATUS_OPTIONS: { value: StatusType; label: string; color: string }[] = [
   { value: "on-track",     label: "🟢 On Track",            color: "text-green-700 bg-green-50 border-green-200" },
@@ -22,9 +23,7 @@ function StatusSelect({ value, onChange }: { value: StatusType; onChange: (v: St
       className={`text-xs font-medium px-2 py-1 rounded border ${opt.color} focus:outline-none`}
     >
       {STATUS_OPTIONS.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
+        <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
   );
@@ -33,10 +32,7 @@ function StatusSelect({ value, onChange }: { value: StatusType; onChange: (v: St
 function EditableText({
   value, onChange, className, multiline,
 }: {
-  value: string;
-  onChange: (v: string) => void;
-  className?: string;
-  multiline?: boolean;
+  value: string; onChange: (v: string) => void; className?: string; multiline?: boolean;
 }) {
   if (multiline) {
     return (
@@ -58,6 +54,14 @@ function EditableText({
   );
 }
 
+/** Ensure every selected sprint has a row in sprintProgress (in order). */
+function normalizeSprintRows(dive: EpicDeepDive, sprintNames: string[]): EpicDeepDive {
+  if (!sprintNames.length) return dive;
+  const byName = new Map(dive.sprintProgress.map((s) => [s.sprintName, s]));
+  const progress = sprintNames.map((name) => byName.get(name) ?? { sprintName: name, activities: "" });
+  return { ...dive, sprintProgress: progress };
+}
+
 export default function SteeringPage() {
   const [sprintInput, setSprintInput] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -67,10 +71,19 @@ export default function SteeringPage() {
   const [result, setResult] = useState<{ url: string; title: string } | null>(null);
   const [openDives, setOpenDives] = useState<Record<number, boolean>>({});
 
+  // Epic selector state
+  const [sprintIds, setSprintIds] = useState<string[]>([]);
+  const [sprintNames, setSprintNames] = useState<string[]>([]);
+  const [allEpics, setAllEpics] = useState<{ key: string; name: string }[]>([]);
+  const [briefingLoading, setBriefingLoading] = useState<Record<number, boolean>>({});
+  const [showEpicPicker, setShowEpicPicker] = useState(false);
+  const epicPickerRef = useRef<HTMLDivElement>(null);
+
   async function handleAnalyze() {
     const ids = sprintInput.split(",").map((s) => s.trim()).filter(Boolean);
     if (!ids.length) { setError("Enter at least one sprint ID"); return; }
     setAnalyzing(true); setError(null); setContent(null); setResult(null);
+    setSprintIds(ids); setAllEpics([]); setSprintNames([]);
     try {
       const res = await fetch("/api/steering/preview", {
         method: "POST",
@@ -79,10 +92,19 @@ export default function SteeringPage() {
       });
       const data = await res.json();
       if (data.success) {
-        setContent(data.content);
-        // open all deep dive sections by default
+        // Normalise every deep dive to have one row per sprint
+        const sNames: string[] = data.sprintNames ?? [];
+        setSprintNames(sNames);
+        setAllEpics(data.epics ?? []);
+        const normalised: SteeringContent = {
+          ...data.content,
+          epicDeepDives: (data.content.epicDeepDives as EpicDeepDive[]).map((d) =>
+            normalizeSprintRows(d, sNames)
+          ),
+        };
+        setContent(normalised);
         const openState: Record<number, boolean> = {};
-        data.content.epicDeepDives?.forEach((_: unknown, i: number) => { openState[i] = true; });
+        normalised.epicDeepDives.forEach((_: unknown, i: number) => { openState[i] = true; });
         setOpenDives(openState);
       } else {
         setError(data.error || "Analysis failed");
@@ -117,7 +139,116 @@ export default function SteeringPage() {
     }
   }
 
-  // Helpers to update nested content
+  /** Run AI briefing for a specific deep dive index. */
+  async function handleBriefDive(diveIndex: number) {
+    if (!content) return;
+    const dive = content.epicDeepDives[diveIndex];
+    setBriefingLoading((prev) => ({ ...prev, [diveIndex]: true }));
+    setError(null);
+    try {
+      const res = await fetch("/api/steering/epic-briefing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ epicKey: dive.epicKey, epicName: dive.epicName, sprintIds }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const briefed = normalizeSprintRows(data.epicDeepDive as EpicDeepDive, sprintNames);
+        updateDive(diveIndex, briefed);
+      } else {
+        setError(data.error || "Epic briefing failed");
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBriefingLoading((prev) => ({ ...prev, [diveIndex]: false }));
+    }
+  }
+
+  /** Add a new epic deep dive for the chosen epic and immediately brief it. */
+  async function handleAddEpic(epicKey: string, epicName: string) {
+    if (!content) return;
+    setShowEpicPicker(false);
+
+    // Create a stub dive and append it
+    const stub: EpicDeepDive = {
+      epicKey,
+      epicName,
+      intro: "",
+      sprintProgress: sprintNames.map((name) => ({ sprintName: name, activities: "" })),
+      challenges: [],
+    };
+    const newDives = [...content.epicDeepDives, stub];
+    const newIndex = newDives.length - 1;
+    setContent({ ...content, epicDeepDives: newDives });
+    setOpenDives((o) => ({ ...o, [newIndex]: true }));
+
+    // Immediately run the AI briefing for it
+    setBriefingLoading((prev) => ({ ...prev, [newIndex]: true }));
+    setError(null);
+    try {
+      const res = await fetch("/api/steering/epic-briefing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ epicKey, epicName, sprintIds }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const briefed = normalizeSprintRows(data.epicDeepDive as EpicDeepDive, sprintNames);
+        setContent((prev) => {
+          if (!prev) return prev;
+          const dives = [...prev.epicDeepDives];
+          dives[newIndex] = briefed;
+          return { ...prev, epicDeepDives: dives };
+        });
+      } else {
+        setError(data.error || "Epic briefing failed");
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBriefingLoading((prev) => ({ ...prev, [newIndex]: false }));
+    }
+  }
+
+  // ── Content helpers ───────────────────────────────────────────────────────
+  const [draggedRowIdx, setDraggedRowIdx] = useState<number | null>(null);
+  const [dragOverRowIdx, setDragOverRowIdx] = useState<number | null>(null);
+
+  function handleRowDragStart(e: React.DragEvent, index: number) {
+    setDraggedRowIdx(index);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", `${index}`);
+  }
+
+  function handleRowDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverRowIdx !== index) {
+      setDragOverRowIdx(index);
+    }
+  }
+
+  function handleRowDrop(e: React.DragEvent, targetIndex: number) {
+    e.preventDefault();
+    if (draggedRowIdx === null || draggedRowIdx === targetIndex || !content) {
+      setDraggedRowIdx(null);
+      setDragOverRowIdx(null);
+      return;
+    }
+    const updated = [...content.executiveSummary];
+    const [moved] = updated.splice(draggedRowIdx, 1);
+    updated.splice(targetIndex, 0, moved);
+    setContent({ ...content, executiveSummary: updated });
+    setDraggedRowIdx(null);
+    setDragOverRowIdx(null);
+  }
+
+  function handleRowDragEnd() {
+    setDraggedRowIdx(null);
+    setDragOverRowIdx(null);
+  }
+
   function updateRow(i: number, patch: Partial<SummaryRow>) {
     if (!content) return;
     const rows = [...content.executiveSummary];
@@ -126,10 +257,7 @@ export default function SteeringPage() {
   }
   function addRow() {
     if (!content) return;
-    setContent({
-      ...content,
-      executiveSummary: [...content.executiveSummary, { feature: "", description: "", status: "on-track" }],
-    });
+    setContent({ ...content, executiveSummary: [...content.executiveSummary, { feature: "", description: "", status: "on-track" }] });
   }
   function removeRow(i: number) {
     if (!content) return;
@@ -142,6 +270,14 @@ export default function SteeringPage() {
     dives[i] = { ...dives[i], ...patch };
     setContent({ ...content, epicDeepDives: dives });
   }
+  function removeDive(i: number) {
+    if (!content) return;
+    const dives = content.epicDeepDives.filter((_, idx) => idx !== i);
+    setContent({ ...content, epicDeepDives: dives });
+    const openState: Record<number, boolean> = {};
+    dives.forEach((_, idx) => { openState[idx] = openDives[idx < i ? idx : idx + 1] ?? false; });
+    setOpenDives(openState);
+  }
 
   function updateWorkstream(i: number, patch: Partial<Workstream>) {
     if (!content) return;
@@ -149,6 +285,10 @@ export default function SteeringPage() {
     ws[i] = { ...ws[i], ...patch };
     setContent({ ...content, otherWorkstreams: ws });
   }
+
+  // Epics already in deep dives — excluded from picker
+  const usedEpicKeys = new Set(content?.epicDeepDives.map((d) => d.epicKey) ?? []);
+  const availableEpics = allEpics.filter((e) => !usedEpicKeys.has(e.key));
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
@@ -223,6 +363,11 @@ export default function SteeringPage() {
             <span className="text-xs bg-purple-100 text-purple-700 font-medium px-3 py-1 rounded-full">
               {content.sprintRange}
             </span>
+            {sprintNames.length > 0 && (
+              <span className="text-xs bg-gray-100 text-gray-500 px-3 py-1 rounded-full">
+                {sprintNames.length} sprint{sprintNames.length !== 1 ? "s" : ""}
+              </span>
+            )}
             <span className="text-xs text-gray-400">AI-generated — review and edit before publishing</span>
           </div>
 
@@ -244,22 +389,39 @@ export default function SteeringPage() {
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
                 1. Executive Summary
               </h3>
-              <button
-                onClick={addRow}
-                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-              >
+              <button onClick={addRow} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
                 <Plus size={12} /> Add row
               </button>
             </div>
             <div className="space-y-2">
               {content.executiveSummary.map((row, i) => (
-                <div key={i} className="flex items-start gap-2 p-2 border border-gray-100 rounded-lg">
+                <div
+                  key={i}
+                  draggable
+                  onDragStart={(e) => handleRowDragStart(e, i)}
+                  onDragOver={(e) => handleRowDragOver(e, i)}
+                  onDrop={(e) => handleRowDrop(e, i)}
+                  onDragEnd={handleRowDragEnd}
+                  className={`flex items-start gap-2 p-2 border rounded-lg transition-all ${
+                    draggedRowIdx === i
+                      ? "opacity-40 bg-gray-50 border-dashed border-gray-400"
+                      : dragOverRowIdx === i
+                      ? "border-purple-400 bg-purple-50/50 shadow-sm"
+                      : "border-gray-100 hover:border-gray-200 bg-white"
+                  }`}
+                >
+                  <div
+                    className="text-gray-300 hover:text-gray-600 cursor-grab active:cursor-grabbing p-1 mt-1 transition flex-shrink-0"
+                    title="Drag to reposition"
+                  >
+                    <GripVertical size={16} />
+                  </div>
                   <div className="flex-1 grid grid-cols-2 gap-2">
                     <EditableText value={row.feature} onChange={(v) => updateRow(i, { feature: v })} />
                     <EditableText value={row.description} onChange={(v) => updateRow(i, { description: v })} />
                   </div>
                   <StatusSelect value={row.status} onChange={(v) => updateRow(i, { status: v })} />
-                  <button onClick={() => removeRow(i)} className="text-gray-300 hover:text-red-500 mt-1">
+                  <button onClick={() => removeRow(i)} className="text-gray-300 hover:text-red-500 mt-1 transition" title="Delete row">
                     <Trash2 size={14} />
                   </button>
                 </div>
@@ -267,23 +429,60 @@ export default function SteeringPage() {
             </div>
           </div>
 
-          {/* Epic Deep Dives */}
+          {/* ── Epic Deep Dives ──────────────────────────────────────────── */}
           {content.epicDeepDives.map((dive, i) => (
-            <div key={i} className="bg-white border border-gray-200 rounded-xl mb-4 overflow-hidden">
-              <button
-                onClick={() => setOpenDives((o) => ({ ...o, [i]: !o[i] }))}
-                className="w-full flex items-center justify-between px-5 py-3 bg-gray-50 hover:bg-gray-100 transition text-left"
-              >
-                <div className="flex items-center gap-2">
+            <div key={`${dive.epicKey}-${i}`} className="bg-white border border-gray-200 rounded-xl mb-4 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-100">
+                <button
+                  onClick={() => setOpenDives((o) => ({ ...o, [i]: !o[i] }))}
+                  className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition"
+                >
                   {openDives[i] ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
                     {i + 2}. {dive.epicName} — Deep Dive
                   </span>
                   <span className="text-xs text-gray-400 font-mono">{dive.epicKey}</span>
+                  {dive.sprintProgress.length > 0 && (
+                    <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full ml-1">
+                      {dive.sprintProgress.length} sprint{dive.sprintProgress.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </button>
+                {/* AI Briefing button */}
+                <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                  <button
+                    onClick={() => handleBriefDive(i)}
+                    disabled={briefingLoading[i] || !sprintIds.length}
+                    title="Re-run AI briefing for this epic"
+                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-purple-200 text-purple-600 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition"
+                  >
+                    {briefingLoading[i]
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : <Sparkles size={12} />}
+                    {briefingLoading[i] ? "Briefing…" : "AI Briefing"}
+                  </button>
+                  <button
+                    onClick={() => removeDive(i)}
+                    className="text-gray-300 hover:text-red-500 transition"
+                    title="Remove deep dive"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
-              </button>
+              </div>
+
               {openDives[i] && (
-                <div className="p-5 space-y-4">
+                <div className="p-5 space-y-5">
+                  {/* Loading overlay for briefing */}
+                  {briefingLoading[i] && (
+                    <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-50 border border-purple-100 rounded-lg px-3 py-2">
+                      <Loader2 size={13} className="animate-spin" />
+                      Running AI briefing for <strong>{dive.epicName}</strong> — this may take 20–40 seconds…
+                    </div>
+                  )}
+
+                  {/* Introduction */}
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">Introduction</label>
                     <EditableText
@@ -292,8 +491,15 @@ export default function SteeringPage() {
                       multiline
                     />
                   </div>
+
+                  {/* Progress by Sprint */}
                   <div>
-                    <label className="block text-xs text-gray-400 mb-2">Progress by Sprint</label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs text-gray-400">
+                        Progress by Sprint
+                        <span className="ml-2 text-gray-300">({dive.sprintProgress.length} row{dive.sprintProgress.length !== 1 ? "s" : ""})</span>
+                      </label>
+                    </div>
                     <div className="space-y-2">
                       {dive.sprintProgress.map((sp, j) => (
                         <div key={j} className="grid grid-cols-3 gap-2 items-start">
@@ -305,16 +511,28 @@ export default function SteeringPage() {
                               updateDive(i, { sprintProgress: p });
                             }}
                           />
-                          <div className="col-span-2">
-                            <EditableText
-                              value={sp.activities}
-                              onChange={(v) => {
-                                const p = [...dive.sprintProgress];
-                                p[j] = { ...p[j], activities: v };
+                          <div className="col-span-2 flex gap-2 items-start">
+                            <div className="flex-1">
+                              <EditableText
+                                value={sp.activities}
+                                onChange={(v) => {
+                                  const p = [...dive.sprintProgress];
+                                  p[j] = { ...p[j], activities: v };
+                                  updateDive(i, { sprintProgress: p });
+                                }}
+                                multiline
+                              />
+                            </div>
+                            <button
+                              onClick={() => {
+                                const p = dive.sprintProgress.filter((_, idx) => idx !== j);
                                 updateDive(i, { sprintProgress: p });
                               }}
-                              multiline
-                            />
+                              className="text-gray-300 hover:text-red-500 mt-1 flex-shrink-0"
+                              title="Remove sprint row"
+                            >
+                              <Trash2 size={13} />
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -330,6 +548,8 @@ export default function SteeringPage() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Challenges */}
                   <div>
                     <label className="block text-xs text-gray-400 mb-2">Challenges / Hiccups</label>
                     <div className="space-y-2">
@@ -370,6 +590,45 @@ export default function SteeringPage() {
             </div>
           ))}
 
+          {/* ── Add Epic Deep Dive picker ───────────────────────────────── */}
+          <div className="relative mb-4" ref={epicPickerRef}>
+            <button
+              onClick={() => setShowEpicPicker((v) => !v)}
+              disabled={availableEpics.length === 0}
+              className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-purple-400 hover:text-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition w-full justify-center"
+            >
+              <Plus size={14} />
+              Add Epic Deep Dive
+              {availableEpics.length > 0 && (
+                <span className="text-xs bg-gray-100 text-gray-400 px-1.5 py-0.5 rounded-full">
+                  {availableEpics.length} available
+                </span>
+              )}
+              {showEpicPicker ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+
+            {showEpicPicker && availableEpics.length > 0 && (
+              <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 max-h-64 overflow-y-auto">
+                <div className="p-2 border-b border-gray-100">
+                  <p className="text-xs text-gray-400 px-2">Select an epic — AI will auto-brief it</p>
+                </div>
+                {availableEpics.map((epic) => (
+                  <button
+                    key={epic.key}
+                    onClick={() => handleAddEpic(epic.key, epic.name)}
+                    className="w-full text-left px-4 py-3 hover:bg-purple-50 transition flex items-center gap-3 border-b border-gray-50 last:border-0"
+                  >
+                    <Sparkles size={13} className="text-purple-400 flex-shrink-0" />
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">{epic.name}</div>
+                      <div className="text-xs text-gray-400 font-mono">{epic.key}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Other Workstreams */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
@@ -397,9 +656,7 @@ export default function SteeringPage() {
                         />
                       </div>
                       <button
-                        onClick={() =>
-                          updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })
-                        }
+                        onClick={() => updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })}
                         className="text-gray-300 hover:text-red-500"
                       >
                         <Trash2 size={13} />
@@ -450,9 +707,7 @@ export default function SteeringPage() {
                 </div>
               ))}
               <button
-                onClick={() =>
-                  setContent({ ...content, collaborationBullets: [...content.collaborationBullets, ""] })
-                }
+                onClick={() => setContent({ ...content, collaborationBullets: [...content.collaborationBullets, ""] })}
                 className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
               >
                 <Plus size={12} /> Add bullet

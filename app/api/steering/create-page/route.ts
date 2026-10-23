@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readConfig, getConfluenceAuthHeader } from '@/lib/config';
 import { buildSteeringPageHTML } from '@/lib/steering';
-import { SteeringContent } from '@/lib/azure-ai';
+import type { SteeringContent } from '@/lib/ai-types';
 import { humanizeError } from '@/lib/api-error';
 import axios from 'axios';
 

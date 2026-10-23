@@ -20,6 +20,7 @@ type ConfluenceConfig = {
 type TeamsConfig = { defaultWebhookUrl: string; notifyChannel: "teams" | "none" };
 type AlertsConfig = { pollIntervalMinutes: number };
 type AzureAiConfig = { endpoint: string; apiKey: string; deploymentName: string; apiVersion: string };
+type OpenAiConfig = { apiKey: string; model: string };
 
 type ConnStatus = "idle" | "testing" | "ok" | "error";
 type ConnResult = { status: ConnStatus; message: string };
@@ -35,6 +36,7 @@ const EMPTY_CONF: ConfluenceConfig = {
 const EMPTY_AZURE: AzureAiConfig = {
   endpoint: "", apiKey: "", deploymentName: "gpt-4o", apiVersion: "2025-01-01-preview",
 };
+const EMPTY_OPENAI: OpenAiConfig = { apiKey: "", model: "gpt-4o" };
 
 const POLL_OPTIONS = [
   { value: 5,   label: "5 minutes" },
@@ -89,8 +91,9 @@ export default function ConfigPage() {
   const [teams, setTeams] = useState<TeamsConfig>({ defaultWebhookUrl: "", notifyChannel: "teams" });
   const [alerts, setAlerts] = useState<AlertsConfig>({ pollIntervalMinutes: 15 });
   const [azureAi, setAzureAi] = useState<AzureAiConfig>(EMPTY_AZURE);
+  const [openAi, setOpenAi] = useState<OpenAiConfig>(EMPTY_OPENAI);
 
-  const [show, setShow] = useState({ jiraPat: false, jiraPwd: false, confPat: false, confPwd: false, webhook: false, azureKey: false });
+  const [show, setShow] = useState({ jiraPat: false, jiraPwd: false, confPat: false, confPwd: false, webhook: false, azureKey: false, openAiKey: false });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -99,6 +102,7 @@ export default function ConfigPage() {
   const [jiraConn, setJiraConn] = useState<ConnResult>({ status: "idle", message: "" });
   const [confConn, setConfConn] = useState<ConnResult>({ status: "idle", message: "" });
   const [azureConn, setAzureConn] = useState<ConnResult>({ status: "idle", message: "" });
+  const [openAiConn, setOpenAiConn] = useState<ConnResult>({ status: "idle", message: "" });
 
   useEffect(() => {
     fetch("/api/config")
@@ -110,6 +114,7 @@ export default function ConfigPage() {
           setTeams({ defaultWebhookUrl: "", notifyChannel: "teams", ...d.config.teams });
           setAlerts(d.config.alerts);
           setAzureAi({ ...EMPTY_AZURE, ...d.config.azureAi });
+          setOpenAi({ ...EMPTY_OPENAI, ...d.config.openAi });
         }
         setLoading(false);
       });
@@ -119,6 +124,7 @@ export default function ConfigPage() {
   useEffect(() => { setJiraConn({ status: "idle", message: "" }); }, [jira.baseUrl, jira.apiToken, jira.username, jira.password]);
   useEffect(() => { setConfConn({ status: "idle", message: "" }); }, [confluence.baseUrl, confluence.apiToken, confluence.username, confluence.password, confluence.spaceKey]);
   useEffect(() => { setAzureConn({ status: "idle", message: "" }); }, [azureAi.endpoint, azureAi.apiKey, azureAi.deploymentName]);
+  useEffect(() => { setOpenAiConn({ status: "idle", message: "" }); }, [openAi.apiKey, openAi.model]);
 
   async function handleSave() {
     setSubmitted(true);
@@ -135,7 +141,7 @@ export default function ConfigPage() {
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, steering: { parentPageId: confluence.steeringParentPageId } }),
+        body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, openAi, steering: { parentPageId: confluence.steeringParentPageId } }),
       });
       const data = await res.json();
       if (data.success) {
@@ -157,7 +163,7 @@ export default function ConfigPage() {
     await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, steering: { parentPageId: confluence.steeringParentPageId } }),
+      body: JSON.stringify({ jira, confluence, teams, alerts, azureAi, openAi, steering: { parentPageId: confluence.steeringParentPageId } }),
     });
   }
 
@@ -194,6 +200,17 @@ export default function ConfigPage() {
     const res = await fetch("/api/config/test-azure");
     const data = await res.json();
     setAzureConn({
+      status: data.success ? "ok" : "error",
+      message: data.success ? `Connected — model: ${data.model}` : data.error,
+    });
+  }
+
+  async function testOpenAi() {
+    setOpenAiConn({ status: "testing", message: "" });
+    await saveForTest();
+    const res = await fetch("/api/config/test-openai");
+    const data = await res.json();
+    setOpenAiConn({
       status: data.success ? "ok" : "error",
       message: data.success ? `Connected — model: ${data.model}` : data.error,
     });
@@ -462,6 +479,54 @@ export default function ConfigPage() {
           <button onClick={testAzure} disabled={azureConn.status === "testing"}
             className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition">
             {azureConn.status === "testing"
+              ? <Loader2 size={14} className="animate-spin" />
+              : <Wifi size={14} />}
+            Test Connection
+          </button>
+        </div>
+      </section>
+
+      {/* ── OPENAI (CHATGPT) ─────────────────────────── */}
+      <section className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
+        <div className="flex items-center gap-2 mb-1">
+          <Brain size={18} className="text-green-500" />
+          <h2 className="text-lg font-semibold text-gray-900">OpenAI (ChatGPT)</h2>
+          <span className="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">Steering Agenda</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-5">
+          Alternative to Azure OpenAI. Configure either — whichever has an API key will be used.
+          If both are set, OpenAI takes priority.
+        </p>
+
+        <div className="grid grid-cols-1 gap-4">
+          <PasswordField label="API Key"
+            hint="platform.openai.com → API keys → Create new secret key"
+            value={openAi.apiKey}
+            show={show.openAiKey}
+            onToggle={() => setShow({ ...show, openAiKey: !show.openAiKey })}
+            onChange={(v) => setOpenAi({ ...openAi, apiKey: v })} />
+
+          <Field label="Model"
+            placeholder="gpt-4o"
+            hint="e.g. gpt-4o, gpt-4o-mini, gpt-4-turbo"
+            value={openAi.model}
+            onChange={(v) => setOpenAi({ ...openAi, model: v })} />
+        </div>
+
+        <div className="mt-4 p-3 bg-green-50 border border-green-100 rounded-lg text-xs text-green-800 flex gap-2">
+          <Info size={14} className="flex-shrink-0 mt-0.5" />
+          <span>
+            <strong>Getting your API key:</strong> Go to{" "}
+            <strong>platform.openai.com → API keys</strong> and create a new secret key.
+            Make sure your account has billing set up and sufficient credits.
+          </span>
+        </div>
+
+        <div className="mt-5 pt-4 border-t border-gray-100 flex items-center justify-between">
+          <ConnBadge result={openAiConn} />
+          <button onClick={testOpenAi} disabled={openAiConn.status === "testing"}
+            className="flex items-center gap-2 text-sm px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition">
+            {openAiConn.status === "testing"
               ? <Loader2 size={14} className="animate-spin" />
               : <Wifi size={14} />}
             Test Connection

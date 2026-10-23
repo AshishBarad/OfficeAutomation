@@ -57,6 +57,10 @@ export interface AppConfig {
     deploymentName: string; // e.g. gpt-4o
     apiVersion: string;     // e.g. 2025-01-01-preview
   };
+  openAi: {
+    apiKey: string;         // sk-... from platform.openai.com
+    model: string;          // e.g. gpt-4o
+  };
   steering: {
     parentPageId: string;   // Confluence parent page ID for steering pages
   };
@@ -91,6 +95,7 @@ const DEFAULT_CONFIG: AppConfig = {
     pollIntervalMinutes: 15,
   },
   azureAi: { endpoint: "", apiKey: "", deploymentName: "gpt-4o", apiVersion: "2025-01-01-preview" },
+  openAi: { apiKey: "", model: "gpt-4o" },
   steering: { parentPageId: "" },
 };
 
@@ -102,6 +107,7 @@ function deepMerge(defaults: AppConfig, saved: Partial<AppConfig>): AppConfig {
     teams:      { ...defaults.teams,      ...(saved.teams      ?? {}) },
     alerts:     { ...defaults.alerts,     ...(saved.alerts     ?? {}) },
     azureAi:    { ...defaults.azureAi,    ...(saved.azureAi    ?? {}) },
+    openAi:     { ...defaults.openAi,     ...(saved.openAi     ?? {}) },
     steering:   { ...defaults.steering,   ...(saved.steering   ?? {}) },
   } as AppConfig;
 }
