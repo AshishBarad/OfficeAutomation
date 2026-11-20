@@ -1,14 +1,13 @@
+import { scheduleShutdown } from "@/lib/server-lifecycle";
+
 /**
  * Kill-switch endpoint.
  * Called via navigator.sendBeacon when the browser tab/window closes.
- * Exits the Next.js server process so stale instances don't pile up.
+ * Exits the Next.js server process after a 3-second grace period so page
+ * refreshes have time to reload and cancel the shutdown.
  */
 export async function POST() {
-  // Small delay so the response can be sent before the process dies
-  setTimeout(() => {
-    console.log("[kill-switch] Browser tab closed — shutting down server.");
-    process.exit(0);
-  }, 300);
+  scheduleShutdown(3000);
 
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,

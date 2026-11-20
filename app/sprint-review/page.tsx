@@ -398,6 +398,76 @@ export default function SprintReviewPage() {
     url: string; title: string; updated: boolean;
     epicCount: number; issueCount: number; defectCount: number; sprintCount: number;
   } | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [initialLoaded, setInitialLoaded] = useState(false);
+
+  // ── Temporary memory: restore on page mount/refresh ────────────────────────
+  useEffect(() => {
+    fetch("/api/temp-memory?key=sprint-review")
+      .then((res) => res.json())
+      .then((res) => {
+        if (res.success && res.data) {
+          const d = res.data;
+          if (typeof d.sprintId === "string") setSprintId(d.sprintId);
+          if (typeof d.selectedProject === "string") setSelectedProject(d.selectedProject);
+          if (typeof d.selectedTeam === "string") setSelectedTeam(d.selectedTeam);
+          if (d.sprintData) setSprintData(d.sprintData);
+          if (d.result) setResult(d.result);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setInitialLoaded(true);
+      });
+  }, []);
+
+  // ── Temporary memory: autosave while application is running ────────────────
+  useEffect(() => {
+    if (!initialLoaded) return;
+    if (!sprintData && !sprintId.trim()) return;
+
+    setSaveStatus("saving");
+    const timer = setTimeout(() => {
+      fetch("/api/temp-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: "sprint-review",
+          data: {
+            sprintId,
+            selectedProject,
+            selectedTeam,
+            sprintData,
+            result,
+            savedAt: Date.now(),
+          },
+        }),
+      })
+        .then(() => {
+          setSaveStatus("saved");
+          setTimeout(() => setSaveStatus("idle"), 2000);
+        })
+        .catch(() => setSaveStatus("idle"));
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [initialLoaded, sprintId, selectedProject, selectedTeam, sprintData, result]);
+
+  async function handleClearDraft() {
+    setSprintData(null);
+    setSprintId("");
+    setSelectedProject("");
+    setSelectedStatuses(new Set());
+    setSelectedTeam("");
+    setResult(null);
+    setError(null);
+    setSaveStatus("idle");
+    try {
+      await fetch("/api/temp-memory?key=sprint-review", { method: "DELETE" });
+    } catch {
+      // silent
+    }
+  }
 
   // Close status dropdown when clicking outside
   useEffect(() => {
@@ -579,9 +649,32 @@ export default function SprintReviewPage() {
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
-      <div className="flex items-center gap-3 mb-2">
-        <FileText className="text-blue-500" size={24} />
-        <h1 className="text-2xl font-bold text-gray-900">Sprint Review</h1>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-3">
+          <FileText className="text-blue-500" size={24} />
+          <h1 className="text-2xl font-bold text-gray-900">Sprint Review</h1>
+        </div>
+        <div className="flex items-center gap-3">
+          {saveStatus === "saving" && (
+            <span className="flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">
+              <Loader2 size={12} className="animate-spin" /> Autosaving…
+            </span>
+          )}
+          {saveStatus === "saved" && (
+            <span className="flex items-center gap-1.5 text-xs text-green-700 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
+              <CheckCircle size={12} /> Autosaved
+            </span>
+          )}
+          {(sprintData || sprintId.trim()) && (
+            <button
+              onClick={handleClearDraft}
+              className="text-xs text-gray-400 hover:text-red-500 transition underline"
+              title="Discard temporary saved data"
+            >
+              Clear draft
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-gray-500 mb-8 text-sm">
         Enter a Jira Sprint ID to preview and generate a Confluence sprint review page.

@@ -34,6 +34,8 @@ export interface SteeringContent {
   epicDeepDives: EpicDeepDive[];
   otherWorkstreams: Workstream[];
   collaborationBullets: string[];
+  hideOtherWorkstreams?: boolean;
+  hideCollaboration?: boolean;
 }
 
 // SprintBundle = data from getSprintReviewData for one sprint

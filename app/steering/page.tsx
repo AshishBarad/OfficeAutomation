@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   FileText, Loader2, CheckCircle, AlertCircle, ExternalLink,
   Plus, Trash2, Brain, ChevronDown, ChevronRight, Sparkles, ChevronUp,
@@ -69,15 +69,92 @@ export default function SteeringPage() {
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<SteeringContent | null>(null);
   const [result, setResult] = useState<{ url: string; title: string } | null>(null);
-  const [openDives, setOpenDives] = useState<Record<number, boolean>>({});
+  const [openDives, setOpenDives] = useState<Record<string, boolean>>({});
 
-  // Epic selector state
+  // Epic selector & drag state
   const [sprintIds, setSprintIds] = useState<string[]>([]);
   const [sprintNames, setSprintNames] = useState<string[]>([]);
   const [allEpics, setAllEpics] = useState<{ key: string; name: string }[]>([]);
-  const [briefingLoading, setBriefingLoading] = useState<Record<number, boolean>>({});
+  const [briefingLoading, setBriefingLoading] = useState<Record<string, boolean>>({});
   const [showEpicPicker, setShowEpicPicker] = useState(false);
+  const [draggedEpicIdx, setDraggedEpicIdx] = useState<number | null>(null);
+  const [dragOverEpicIdx, setDragOverEpicIdx] = useState<number | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const epicPickerRef = useRef<HTMLDivElement>(null);
+
+  // ── Temporary memory: restore on page mount/refresh ────────────────────────
+  useEffect(() => {
+    fetch("/api/temp-memory?key=steering")
+      .then((res) => res.json())
+      .then((res) => {
+        if (res.success && res.data) {
+          const d = res.data;
+          if (typeof d.sprintInput === "string") setSprintInput(d.sprintInput);
+          if (Array.isArray(d.sprintIds)) setSprintIds(d.sprintIds);
+          if (Array.isArray(d.sprintNames)) setSprintNames(d.sprintNames);
+          if (Array.isArray(d.allEpics)) setAllEpics(d.allEpics);
+          if (d.content) setContent(d.content);
+          if (d.openDives) setOpenDives(d.openDives);
+          if (d.result) setResult(d.result);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        setInitialLoaded(true);
+      });
+  }, []);
+
+  // ── Temporary memory: autosave while application is running ────────────────
+  useEffect(() => {
+    if (!initialLoaded) return;
+    if (!content && !sprintInput.trim()) return;
+
+    setSaveStatus("saving");
+    const timer = setTimeout(() => {
+      fetch("/api/temp-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: "steering",
+          data: {
+            sprintInput,
+            sprintIds,
+            sprintNames,
+            allEpics,
+            content,
+            openDives,
+            result,
+            savedAt: Date.now(),
+          },
+        }),
+      })
+        .then(() => {
+          setSaveStatus("saved");
+          setTimeout(() => setSaveStatus("idle"), 2000);
+        })
+        .catch(() => setSaveStatus("idle"));
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [initialLoaded, content, sprintInput, sprintIds, sprintNames, allEpics, openDives, result]);
+
+  async function handleClearDraft() {
+    setContent(null);
+    setSprintInput("");
+    setSprintIds([]);
+    setSprintNames([]);
+    setAllEpics([]);
+    setResult(null);
+    setOpenDives({});
+    setError(null);
+    setSaveStatus("idle");
+    try {
+      await fetch("/api/temp-memory?key=steering", { method: "DELETE" });
+    } catch {
+      // silent
+    }
+  }
 
   async function handleAnalyze() {
     const ids = sprintInput.split(",").map((s) => s.trim()).filter(Boolean);
@@ -103,8 +180,8 @@ export default function SteeringPage() {
           ),
         };
         setContent(normalised);
-        const openState: Record<number, boolean> = {};
-        normalised.epicDeepDives.forEach((_: unknown, i: number) => { openState[i] = true; });
+        const openState: Record<string, boolean> = {};
+        normalised.epicDeepDives.forEach((d) => { openState[d.epicKey] = true; });
         setOpenDives(openState);
       } else {
         setError(data.error || "Analysis failed");
@@ -139,11 +216,12 @@ export default function SteeringPage() {
     }
   }
 
-  /** Run AI briefing for a specific deep dive index. */
+  /** Run AI briefing for a specific deep dive. */
   async function handleBriefDive(diveIndex: number) {
     if (!content) return;
     const dive = content.epicDeepDives[diveIndex];
-    setBriefingLoading((prev) => ({ ...prev, [diveIndex]: true }));
+    if (!dive) return;
+    setBriefingLoading((prev) => ({ ...prev, [dive.epicKey]: true }));
     setError(null);
     try {
       const res = await fetch("/api/steering/epic-briefing", {
@@ -154,18 +232,24 @@ export default function SteeringPage() {
       const data = await res.json();
       if (data.success) {
         const briefed = normalizeSprintRows(data.epicDeepDive as EpicDeepDive, sprintNames);
-        updateDive(diveIndex, briefed);
+        setContent((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            epicDeepDives: prev.epicDeepDives.map((d) => (d.epicKey === dive.epicKey ? briefed : d)),
+          };
+        });
       } else {
         setError(data.error || "Epic briefing failed");
       }
     } catch (e) {
       setError(String(e));
     } finally {
-      setBriefingLoading((prev) => ({ ...prev, [diveIndex]: false }));
+      setBriefingLoading((prev) => ({ ...prev, [dive.epicKey]: false }));
     }
   }
 
-  /** Add a new epic deep dive for the chosen epic and immediately brief it. */
+  /** Add a new epic deep dive for the chosen epic, create an executive summary row, and immediately brief it. */
   async function handleAddEpic(epicKey: string, epicName: string) {
     if (!content) return;
     setShowEpicPicker(false);
@@ -179,12 +263,29 @@ export default function SteeringPage() {
       challenges: [],
     };
     const newDives = [...content.epicDeepDives, stub];
-    const newIndex = newDives.length - 1;
-    setContent({ ...content, epicDeepDives: newDives });
-    setOpenDives((o) => ({ ...o, [newIndex]: true }));
+
+    // Automatically create a new row in executive summary for that epic
+    const alreadyInSummary = content.executiveSummary.some(
+      (r) =>
+        r.feature.toLowerCase().trim() === epicName.toLowerCase().trim() ||
+        (epicKey && r.feature.includes(epicKey))
+    );
+    const updatedSummary = alreadyInSummary
+      ? content.executiveSummary
+      : [
+          ...content.executiveSummary,
+          { feature: epicName, description: "", status: "on-track" as StatusType },
+        ];
+
+    setContent({
+      ...content,
+      epicDeepDives: newDives,
+      executiveSummary: updatedSummary,
+    });
+    setOpenDives((o) => ({ ...o, [epicKey]: true }));
 
     // Immediately run the AI briefing for it
-    setBriefingLoading((prev) => ({ ...prev, [newIndex]: true }));
+    setBriefingLoading((prev) => ({ ...prev, [epicKey]: true }));
     setError(null);
     try {
       const res = await fetch("/api/steering/epic-briefing", {
@@ -197,9 +298,22 @@ export default function SteeringPage() {
         const briefed = normalizeSprintRows(data.epicDeepDive as EpicDeepDive, sprintNames);
         setContent((prev) => {
           if (!prev) return prev;
-          const dives = [...prev.epicDeepDives];
-          dives[newIndex] = briefed;
-          return { ...prev, epicDeepDives: dives };
+          const dives = prev.epicDeepDives.map((d) => (d.epicKey === epicKey ? briefed : d));
+          // Auto-populate the description of the corresponding executive summary row if empty
+          const exec = prev.executiveSummary.map((r) => {
+            const matchesEpic =
+              r.feature.toLowerCase().trim() === epicName.toLowerCase().trim() ||
+              (epicKey && r.feature.includes(epicKey));
+            if (matchesEpic && !r.description) {
+              return {
+                ...r,
+                description: briefed.intro,
+                status: briefed.challenges.length > 0 ? ("managed-risk" as StatusType) : r.status,
+              };
+            }
+            return r;
+          });
+          return { ...prev, epicDeepDives: dives, executiveSummary: exec };
         });
       } else {
         setError(data.error || "Epic briefing failed");
@@ -207,7 +321,7 @@ export default function SteeringPage() {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBriefingLoading((prev) => ({ ...prev, [newIndex]: false }));
+      setBriefingLoading((prev) => ({ ...prev, [epicKey]: false }));
     }
   }
 
@@ -272,11 +386,58 @@ export default function SteeringPage() {
   }
   function removeDive(i: number) {
     if (!content) return;
+    const removedKey = content.epicDeepDives[i]?.epicKey;
     const dives = content.epicDeepDives.filter((_, idx) => idx !== i);
     setContent({ ...content, epicDeepDives: dives });
-    const openState: Record<number, boolean> = {};
-    dives.forEach((_, idx) => { openState[idx] = openDives[idx < i ? idx : idx + 1] ?? false; });
-    setOpenDives(openState);
+    if (removedKey) {
+      setOpenDives((o) => {
+        const next = { ...o };
+        delete next[removedKey];
+        return next;
+      });
+    }
+  }
+
+  function handleEpicDragStart(e: React.DragEvent, index: number) {
+    const target = e.target as HTMLElement;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+      e.preventDefault();
+      return;
+    }
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", `${index}`);
+    // Defer setting state by 0ms so the browser can snapshot the drag image before cards collapse
+    setTimeout(() => {
+      setDraggedEpicIdx(index);
+    }, 0);
+  }
+
+  function handleEpicDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverEpicIdx !== index) {
+      setDragOverEpicIdx(index);
+    }
+  }
+
+  function handleEpicDrop(e: React.DragEvent, targetIndex: number) {
+    e.preventDefault();
+    if (draggedEpicIdx === null || draggedEpicIdx === targetIndex || !content) {
+      setDraggedEpicIdx(null);
+      setDragOverEpicIdx(null);
+      return;
+    }
+    const updated = [...content.epicDeepDives];
+    const [moved] = updated.splice(draggedEpicIdx, 1);
+    updated.splice(targetIndex, 0, moved);
+    setContent({ ...content, epicDeepDives: updated });
+    setDraggedEpicIdx(null);
+    setDragOverEpicIdx(null);
+  }
+
+  function handleEpicDragEnd() {
+    setDraggedEpicIdx(null);
+    setDragOverEpicIdx(null);
   }
 
   function updateWorkstream(i: number, patch: Partial<Workstream>) {
@@ -304,11 +465,40 @@ export default function SteeringPage() {
   const usedEpicKeys = new Set(content?.epicDeepDives.map((d) => d.epicKey) ?? []);
   const availableEpics = allEpics.filter((e) => !usedEpicKeys.has(e.key));
 
+  const isDraggingAnyEpic = draggedEpicIdx !== null;
+  const otherWorkstreamsSectionNum = content ? content.epicDeepDives.length + 2 : 2;
+  const collabSectionNum = content
+    ? content.epicDeepDives.length + 2 + (content.hideOtherWorkstreams ? 0 : 1)
+    : 3;
+
   return (
     <div className="p-8 max-w-5xl mx-auto">
-      <div className="flex items-center gap-3 mb-2">
-        <Brain className="text-purple-500" size={24} />
-        <h1 className="text-2xl font-bold text-gray-900">Steering Meeting Agenda</h1>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-3">
+          <Brain className="text-purple-500" size={24} />
+          <h1 className="text-2xl font-bold text-gray-900">Steering Meeting Agenda</h1>
+        </div>
+        <div className="flex items-center gap-3">
+          {saveStatus === "saving" && (
+            <span className="flex items-center gap-1.5 text-xs text-purple-600 bg-purple-50 px-2.5 py-1 rounded-full border border-purple-100">
+              <Loader2 size={12} className="animate-spin" /> Autosaving…
+            </span>
+          )}
+          {saveStatus === "saved" && (
+            <span className="flex items-center gap-1.5 text-xs text-green-700 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
+              <CheckCircle size={12} /> Autosaved
+            </span>
+          )}
+          {(content || sprintInput.trim()) && (
+            <button
+              onClick={handleClearDraft}
+              className="text-xs text-gray-400 hover:text-red-500 transition underline"
+              title="Discard temporary saved data"
+            >
+              Clear draft
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-gray-500 mb-8 text-sm">
         Enter sprint IDs, let the AI analyse and summarise them, review &amp; edit the output, then publish to Confluence.
@@ -444,57 +634,81 @@ export default function SteeringPage() {
           </div>
 
           {/* ── Epic Deep Dives ──────────────────────────────────────────── */}
-          {content.epicDeepDives.map((dive, i) => (
-            <div key={`${dive.epicKey}-${i}`} className="bg-white border border-gray-200 rounded-xl mb-4 overflow-hidden">
-              {/* Header */}
-              <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-100">
-                <button
-                  onClick={() => setOpenDives((o) => ({ ...o, [i]: !o[i] }))}
-                  className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition"
-                >
-                  {openDives[i] ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-                    {i + 2}. {dive.epicName} — Deep Dive
-                  </span>
-                  <span className="text-xs text-gray-400 font-mono">{dive.epicKey}</span>
-                  {dive.sprintProgress.length > 0 && (
-                    <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full ml-1">
-                      {dive.sprintProgress.length} sprint{dive.sprintProgress.length !== 1 ? "s" : ""}
-                    </span>
-                  )}
-                </button>
-                {/* AI Briefing button */}
-                <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                  <button
-                    onClick={() => handleBriefDive(i)}
-                    disabled={briefingLoading[i] || !sprintIds.length}
-                    title="Re-run AI briefing for this epic"
-                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-purple-200 text-purple-600 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition"
-                  >
-                    {briefingLoading[i]
-                      ? <Loader2 size={12} className="animate-spin" />
-                      : <Sparkles size={12} />}
-                    {briefingLoading[i] ? "Briefing…" : "AI Briefing"}
-                  </button>
-                  <button
-                    onClick={() => removeDive(i)}
-                    className="text-gray-300 hover:text-red-500 transition"
-                    title="Remove deep dive"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
+          {content.epicDeepDives.map((dive, i) => {
+            const isExpanded = !isDraggingAnyEpic && (openDives[dive.epicKey] ?? false);
+            const isLoading = briefingLoading[dive.epicKey] ?? false;
 
-              {openDives[i] && (
-                <div className="p-5 space-y-5">
-                  {/* Loading overlay for briefing */}
-                  {briefingLoading[i] && (
-                    <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-50 border border-purple-100 rounded-lg px-3 py-2">
-                      <Loader2 size={13} className="animate-spin" />
-                      Running AI briefing for <strong>{dive.epicName}</strong> — this may take 20–40 seconds…
-                    </div>
-                  )}
+            return (
+              <div
+                key={dive.epicKey}
+                draggable
+                onDragStart={(e) => handleEpicDragStart(e, i)}
+                onDragOver={(e) => handleEpicDragOver(e, i)}
+                onDrop={(e) => handleEpicDrop(e, i)}
+                onDragEnd={handleEpicDragEnd}
+                className={`bg-white border rounded-xl mb-4 overflow-hidden transition-all ${
+                  draggedEpicIdx === i
+                    ? "opacity-40 bg-gray-50 border-dashed border-gray-400"
+                    : dragOverEpicIdx === i
+                    ? "border-purple-400 bg-purple-50/50 shadow-sm"
+                    : "border-gray-200"
+                }`}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-100">
+                  <div
+                    className="text-gray-300 hover:text-gray-600 cursor-grab active:cursor-grabbing p-1 mr-1 transition flex-shrink-0"
+                    title="Drag to reposition epic"
+                  >
+                    <GripVertical size={16} />
+                  </div>
+                  <button
+                    onClick={() => setOpenDives((o) => ({ ...o, [dive.epicKey]: !o[dive.epicKey] }))}
+                    className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition"
+                  >
+                    {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+                      {i + 2}. {dive.epicName} — Deep Dive
+                    </span>
+                    <span className="text-xs text-gray-400 font-mono">{dive.epicKey}</span>
+                    {dive.sprintProgress.length > 0 && (
+                      <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full ml-1">
+                        {dive.sprintProgress.length} sprint{dive.sprintProgress.length !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </button>
+                  {/* AI Briefing button */}
+                  <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                    <button
+                      onClick={() => handleBriefDive(i)}
+                      disabled={isLoading || !sprintIds.length}
+                      title="Re-run AI briefing for this epic"
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-purple-200 text-purple-600 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition"
+                    >
+                      {isLoading
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <Sparkles size={12} />}
+                      {isLoading ? "Briefing…" : "AI Briefing"}
+                    </button>
+                    <button
+                      onClick={() => removeDive(i)}
+                      className="text-gray-300 hover:text-red-500 transition"
+                      title="Remove deep dive"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="p-5 space-y-5">
+                    {/* Loading overlay for briefing */}
+                    {isLoading && (
+                      <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-50 border border-purple-100 rounded-lg px-3 py-2">
+                        <Loader2 size={13} className="animate-spin" />
+                        Running AI briefing for <strong>{dive.epicName}</strong> — this may take 20–40 seconds…
+                      </div>
+                    )}
 
                   {/* Introduction */}
                   <div>
@@ -602,7 +816,8 @@ export default function SteeringPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
 
           {/* ── Add Epic Deep Dive picker ───────────────────────────────── */}
           <div className="relative mb-4" ref={epicPickerRef}>
@@ -644,116 +859,181 @@ export default function SteeringPage() {
           </div>
 
           {/* Other Workstreams */}
-          <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-                {content.epicDeepDives.length + 2}. Other Major Workstreams
-              </h3>
+          {content.hideOtherWorkstreams ? (
+            <div className="mb-4">
               <button
-                onClick={addWorkstream}
-                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                onClick={() =>
+                  setContent({
+                    ...content,
+                    hideOtherWorkstreams: false,
+                    otherWorkstreams:
+                      content.otherWorkstreams && content.otherWorkstreams.length > 0
+                        ? content.otherWorkstreams
+                        : [{ title: "", bullets: [""] }],
+                  })
+                }
+                className="flex items-center gap-2 text-xs px-4 py-2.5 rounded-xl border border-dashed border-gray-300 text-gray-500 hover:border-purple-400 hover:text-purple-600 transition w-full justify-center"
               >
-                <Plus size={12} /> Add workstream
+                <Plus size={13} /> Add Other Major Workstreams
               </button>
             </div>
-            {content.otherWorkstreams.length === 0 ? (
-              <p className="text-xs text-gray-400 italic py-2">
-                No workstreams remaining.
-              </p>
-            ) : (
-              content.otherWorkstreams.map((ws, i) => (
-                <div key={i} className="mb-5 last:mb-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="flex-1">
-                      <EditableText
-                        value={ws.title}
-                        onChange={(v) => updateWorkstream(i, { title: v })}
-                        className="font-semibold"
-                      />
-                    </div>
-                    <button
-                      onClick={() => removeWorkstream(i)}
-                      className="text-gray-300 hover:text-red-500 p-1 transition flex-shrink-0"
-                      title="Delete entire workstream"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                  <div className="ml-4 space-y-1 mt-2">
-                    {ws.bullets.map((b, j) => (
-                      <div key={j} className="flex items-center gap-2">
-                        <span className="text-gray-400">•</span>
-                        <div className="flex-1">
-                          <EditableText
-                            value={b}
-                            onChange={(v) => {
-                              const bullets = [...ws.bullets];
-                              bullets[j] = v;
-                              updateWorkstream(i, { bullets });
-                            }}
-                          />
-                        </div>
-                        <button
-                          onClick={() => updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })}
-                          className="text-gray-300 hover:text-red-500"
-                          title="Delete bullet"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    ))}
-                    <button
-                      onClick={() => updateWorkstream(i, { bullets: [...ws.bullets, ""] })}
-                      className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      <Plus size={12} /> Add bullet
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Collaboration */}
-          <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
-              {content.epicDeepDives.length + 3}. Collaboration with Stakeholders
-            </h3>
-            <div className="space-y-2">
-              {content.collaborationBullets.map((b, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <span className="text-gray-400">•</span>
-                  <div className="flex-1">
-                    <EditableText
-                      value={b}
-                      onChange={(v) => {
-                        const bullets = [...content.collaborationBullets];
-                        bullets[i] = v;
-                        setContent({ ...content, collaborationBullets: bullets });
-                      }}
-                    />
-                  </div>
+          ) : (
+            <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+                  {otherWorkstreamsSectionNum}. Other Major Workstreams
+                </h3>
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() =>
-                      setContent({
-                        ...content,
-                        collaborationBullets: content.collaborationBullets.filter((_, idx) => idx !== i),
-                      })
-                    }
-                    className="text-gray-300 hover:text-red-500"
+                    onClick={addWorkstream}
+                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
                   >
-                    <Trash2 size={13} />
+                    <Plus size={12} /> Add workstream
+                  </button>
+                  <button
+                    onClick={() => setContent({ ...content, hideOtherWorkstreams: true })}
+                    className="text-gray-300 hover:text-red-500 p-1 transition"
+                    title="Delete 'Other Major Workstreams' section"
+                  >
+                    <Trash2 size={14} />
                   </button>
                 </div>
-              ))}
+              </div>
+              {content.otherWorkstreams.length === 0 ? (
+                <p className="text-xs text-gray-400 italic py-2">
+                  No workstreams remaining.
+                </p>
+              ) : (
+                content.otherWorkstreams.map((ws, i) => (
+                  <div key={i} className="mb-5 last:mb-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="flex-1">
+                        <EditableText
+                          value={ws.title}
+                          onChange={(v) => updateWorkstream(i, { title: v })}
+                          className="font-semibold"
+                        />
+                      </div>
+                      <button
+                        onClick={() => removeWorkstream(i)}
+                        className="text-gray-300 hover:text-red-500 p-1 transition flex-shrink-0"
+                        title="Delete entire workstream"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <div className="ml-4 space-y-1 mt-2">
+                      {ws.bullets.map((b, j) => (
+                        <div key={j} className="flex items-center gap-2">
+                          <span className="text-gray-400">•</span>
+                          <div className="flex-1">
+                            <EditableText
+                              value={b}
+                              onChange={(v) => {
+                                const bullets = [...ws.bullets];
+                                bullets[j] = v;
+                                updateWorkstream(i, { bullets });
+                              }}
+                            />
+                          </div>
+                          <button
+                            onClick={() => updateWorkstream(i, { bullets: ws.bullets.filter((_, idx) => idx !== j) })}
+                            className="text-gray-300 hover:text-red-500"
+                            title="Delete bullet"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => updateWorkstream(i, { bullets: [...ws.bullets, ""] })}
+                        className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                      >
+                        <Plus size={12} /> Add bullet
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Collaboration */}
+          {content.hideCollaboration ? (
+            <div className="mb-6">
               <button
-                onClick={() => setContent({ ...content, collaborationBullets: [...content.collaborationBullets, ""] })}
-                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                onClick={() =>
+                  setContent({
+                    ...content,
+                    hideCollaboration: false,
+                    collaborationBullets:
+                      content.collaborationBullets && content.collaborationBullets.length > 0
+                        ? content.collaborationBullets
+                        : [""],
+                  })
+                }
+                className="flex items-center gap-2 text-xs px-4 py-2.5 rounded-xl border border-dashed border-gray-300 text-gray-500 hover:border-purple-400 hover:text-purple-600 transition w-full justify-center"
               >
-                <Plus size={12} /> Add bullet
+                <Plus size={13} /> Add Collaboration with Stakeholders
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="bg-white border border-gray-200 rounded-xl p-5 mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
+                  {collabSectionNum}. Collaboration with Stakeholders
+                </h3>
+                <button
+                  onClick={() => setContent({ ...content, hideCollaboration: true })}
+                  className="text-gray-300 hover:text-red-500 p-1 transition"
+                  title="Delete 'Collaboration with Stakeholders' section"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {content.collaborationBullets.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic py-2">
+                    No collaboration bullets remaining.
+                  </p>
+                ) : (
+                  content.collaborationBullets.map((b, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="text-gray-400">•</span>
+                      <div className="flex-1">
+                        <EditableText
+                          value={b}
+                          onChange={(v) => {
+                            const bullets = [...content.collaborationBullets];
+                            bullets[i] = v;
+                            setContent({ ...content, collaborationBullets: bullets });
+                          }}
+                        />
+                      </div>
+                      <button
+                        onClick={() =>
+                          setContent({
+                            ...content,
+                            collaborationBullets: content.collaborationBullets.filter((_, idx) => idx !== i),
+                          })
+                        }
+                        className="text-gray-300 hover:text-red-500"
+                        title="Delete bullet"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))
+                )}
+                <button
+                  onClick={() => setContent({ ...content, collaborationBullets: [...content.collaborationBullets, ""] })}
+                  className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                >
+                  <Plus size={12} /> Add bullet
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Publish */}
           <div className="flex justify-end">

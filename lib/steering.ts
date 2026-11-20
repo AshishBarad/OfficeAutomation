@@ -72,24 +72,33 @@ ${
     })
     .join('');
 
+  let sectionNum = content.epicDeepDives.length + 2;
+
   // 3. Other Major Workstreams
-  const workstreamSections = content.otherWorkstreams
-    .map((ws, i) => {
-      const bullets = ws.bullets.map((b) => `<li>${esc(b)}</li>`).join('');
-      return `<h3>${content.epicDeepDives.length + 2}.${i + 1} ${esc(ws.title)}</h3><ul>${bullets}</ul>`;
-    })
-    .join('');
-  const otherWorkstreams = `
-<h2>${content.epicDeepDives.length + 2}. Other Major Workstreams</h2>
+  let otherWorkstreams = '';
+  if (!content.hideOtherWorkstreams && content.otherWorkstreams && content.otherWorkstreams.length > 0) {
+    const currentNum = sectionNum++;
+    const workstreamSections = content.otherWorkstreams
+      .map((ws, i) => {
+        const bullets = ws.bullets.map((b) => `<li>${esc(b)}</li>`).join('');
+        return `<h3>${currentNum}.${i + 1} ${esc(ws.title)}</h3><ul>${bullets}</ul>`;
+      })
+      .join('');
+    otherWorkstreams = `
+<h2>${currentNum}. Other Major Workstreams</h2>
 ${workstreamSections}`;
+  }
 
   // 4. Collaboration
-  const collabNum = content.epicDeepDives.length + 3;
-  const collabBullets = content.collaborationBullets.map((b) => `<li>${esc(b)}</li>`).join('');
-  const collaboration = `
-<h2>${collabNum}. Collaboration with Stakeholders</h2>
+  let collaboration = '';
+  if (!content.hideCollaboration && content.collaborationBullets && content.collaborationBullets.length > 0) {
+    const currentNum = sectionNum++;
+    const collabBullets = content.collaborationBullets.map((b) => `<li>${esc(b)}</li>`).join('');
+    collaboration = `
+<h2>${currentNum}. Collaboration with Stakeholders</h2>
 <p>The team maintains the following recurring governance and coordination activities:</p>
 <ul>${collabBullets}</ul>`;
+  }
 
   return `${legend}${execSummary}${deepDives}${otherWorkstreams}${collaboration}`;
 }
