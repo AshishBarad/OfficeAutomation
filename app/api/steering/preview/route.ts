@@ -8,7 +8,10 @@ export async function POST(req: NextRequest) {
   const config = readConfig();
 
   try {
-    const { sprintIds } = (await req.json()) as { sprintIds: string[] };
+    const { sprintIds, selectedEpicKeys } = (await req.json()) as {
+      sprintIds: string[];
+      selectedEpicKeys?: string[];
+    };
     if (!sprintIds?.length) {
       return NextResponse.json(
         { success: false, error: 'No sprint IDs provided. Enter one or more sprint IDs separated by commas.' },
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const content = await analyzeSprintDataForSteering(config, bundles);
+    const content = await analyzeSprintDataForSteering(config, bundles, selectedEpicKeys);
 
     // Collect all unique epics across all sprints for the epic selector
     const epicMap = new Map<string, string>();

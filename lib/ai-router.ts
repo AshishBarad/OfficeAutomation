@@ -13,7 +13,8 @@ export type { SteeringContent, SprintBundle, EpicDeepDive };
  */
 export async function analyzeSprintDataForSteering(
   config: AppConfig,
-  bundles: SprintBundle[]
+  bundles: SprintBundle[],
+  selectedEpicKeys?: string[]
 ): Promise<SteeringContent> {
   const openAiReady = !!config.openAi?.apiKey;
   const azureReady =
@@ -21,8 +22,8 @@ export async function analyzeSprintDataForSteering(
     !!config.azureAi?.apiKey &&
     !!config.azureAi?.deploymentName;
 
-  if (openAiReady) return analyzeSprintDataForSteeringOpenAI(config, bundles);
-  if (azureReady) return analyzeSprintDataForSteeringAzure(config, bundles);
+  if (openAiReady) return analyzeSprintDataForSteeringOpenAI(config, bundles, selectedEpicKeys);
+  if (azureReady) return analyzeSprintDataForSteeringAzure(config, bundles, selectedEpicKeys);
 
   throw new Error(
     'No AI provider is configured. ' +

@@ -46,9 +46,10 @@ async function callAzure<T>(config: AppConfig, userMessage: string): Promise<T> 
 
 export async function analyzeSprintDataForSteeringAzure(
   config: AppConfig,
-  bundles: SprintBundle[]
+  bundles: SprintBundle[],
+  selectedEpicKeys?: string[]
 ): Promise<SteeringContent> {
-  return callAzure<SteeringContent>(config, buildUserMessage(bundles));
+  return callAzure<SteeringContent>(config, buildUserMessage(bundles, selectedEpicKeys));
 }
 
 export async function analyzeEpicForSteeringAzure(

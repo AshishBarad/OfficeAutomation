@@ -5,14 +5,42 @@ export function buildSystemPrompt(): string {
 Return ONLY valid JSON matching the exact schema provided. No markdown, no explanation, no code fences - just the raw JSON object.`;
 }
 
-export function buildUserMessage(bundles: SprintBundle[]): string {
+export function buildUserMessage(bundles: SprintBundle[], selectedEpicKeys?: string[]): string {
   const sprintCount = bundles.length;
   const sprintNames = bundles.map((b) => b.sprint.name).join(', ');
+
+  const hasSelectedKeys = Array.isArray(selectedEpicKeys) && selectedEpicKeys.length > 0;
+  const selectedSet = new Set(selectedEpicKeys ?? []);
+
+  // Optimize bundle payload to drastically reduce tokens:
+  // For selected epics: keep full stories and orphan issues.
+  // For unselected epics: keep only key and summary so they can be grouped in otherWorkstreams.
+  const optimizedBundles = bundles.map((b) => ({
+    sprintId: b.sprintId,
+    sprint: b.sprint,
+    epics: b.epics.map((e) => {
+      if (!hasSelectedKeys || selectedSet.has(e.key)) {
+        return e;
+      }
+      return {
+        key: e.key,
+        summary: e.summary,
+        status: e.status,
+        stories: [],
+        orphanIssues: [],
+      };
+    }),
+    noEpic: b.noEpic,
+  }));
+
+  const epicRule = hasSelectedKeys
+    ? `- Generate epicDeepDives ONLY for the following selected epics: ${Array.from(selectedSet).join(', ')}.\n- In executiveSummary, include a row for each of these selected epics.\n- otherWorkstreams covers all other remaining epics/themes.`
+    : `- Only include epics with meaningful activity in epicDeepDives (skip trivial/one-liner epics).\n- otherWorkstreams covers epics/themes not in deep dives.`;
 
   return `Analyze the following Jira sprint data from ${sprintCount} sprint(s) (${sprintNames}) and produce a steering meeting agenda JSON.
 
 Sprint data:
-${JSON.stringify(bundles, null, 2)}
+${JSON.stringify(optimizedBundles, null, 2)}
 
 Return a JSON object matching EXACTLY this TypeScript interface (use actual data from above - do NOT invent facts):
 {
@@ -46,8 +74,7 @@ Return a JSON object matching EXACTLY this TypeScript interface (use actual data
 }
 
 Rules:
-- Only include epics with meaningful activity in epicDeepDives (skip trivial/one-liner epics)
-- otherWorkstreams covers epics/themes not in deep dives
+${epicRule}
 - collaborationBullets describes recurring team ceremonies and stakeholder sync activities
 - Base all content strictly on the provided data`;
 }

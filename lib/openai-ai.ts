@@ -36,9 +36,10 @@ async function callOpenAI<T>(config: AppConfig, userMessage: string): Promise<T>
 
 export async function analyzeSprintDataForSteeringOpenAI(
   config: AppConfig,
-  bundles: SprintBundle[]
+  bundles: SprintBundle[],
+  selectedEpicKeys?: string[]
 ): Promise<SteeringContent> {
-  return callOpenAI<SteeringContent>(config, buildUserMessage(bundles));
+  return callOpenAI<SteeringContent>(config, buildUserMessage(bundles, selectedEpicKeys));
 }
 
 export async function analyzeEpicForSteeringOpenAI(
