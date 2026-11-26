@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, Fragment } from "react";
 import {
   FileText, ExternalLink, Loader2, CheckCircle,
   AlertCircle, ChevronDown, ChevronRight, Bug, BarChart2, ChevronUp,
@@ -171,34 +171,42 @@ function EpicSection({ epic, jiraBaseUrl, spFieldId }: {
           {epic.stories.length === 0 && epic.orphanIssues.length === 0
             ? <p className="px-5 py-4 text-sm text-gray-400 italic">No issues under this epic.</p>
             : (
-              <table className="w-full text-sm">
+              <table className="w-full text-sm table-fixed min-w-[850px]">
+                <colgroup>
+                  <col style={{ width: "38%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "14%" }} />
+                  <col style={{ width: "20%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "6%" }} />
+                </colgroup>
                 <thead>
                   <tr className="bg-gray-800 text-white text-xs uppercase">
-                    <th className="px-4 py-2 text-left">Story / Task</th>
-                    <th className="px-4 py-2 text-left">Status</th>
-                    <th className="px-4 py-2 text-left">Sprint Result</th>
-                    <th className="px-4 py-2 text-left">Assignee</th>
-                    <th className="px-4 py-2 text-left">Type</th>
-                    <th className="px-4 py-2 text-center">SP</th>
+                    <th className="px-4 py-2 text-left" style={{ width: "38%" }}>Story / Task</th>
+                    <th className="px-4 py-2 text-left" style={{ width: "13%" }}>Status</th>
+                    <th className="px-4 py-2 text-left" style={{ width: "14%" }}>Sprint Result</th>
+                    <th className="px-4 py-2 text-left" style={{ width: "20%" }}>Assignee</th>
+                    <th className="px-4 py-2 text-left" style={{ width: "9%" }}>Type</th>
+                    <th className="px-4 py-2 text-center" style={{ width: "6%" }}>SP</th>
                   </tr>
                 </thead>
                 <tbody>
                   {epic.stories.map((story, si) => {
                     const storySP = getStoryPoints(story.issue, spFieldId);
                     return (
-                      <>
+                      <Fragment key={story.issue.key}>
                         {/* Story row */}
-                        <tr key={story.issue.key} className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                          <td className="px-4 py-3 font-medium text-blue-600 text-xs">
+                        <tr className={si % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                          <td className="px-4 py-3 font-medium text-blue-600 text-xs break-words">
                             <TicketLink issueKey={story.issue.key} jiraBaseUrl={jiraBaseUrl} /><br />
                             <span className="text-gray-700 font-normal">{story.issue.fields.summary}</span>
                           </td>
-                          <td className="px-4 py-2">{statusBadge(story.issue.fields.status.name)}</td>
-                          <td className="px-4 py-2">{completionStatusBadge(story.issue.fields._completionStatus)}</td>
-                          <td className="px-4 py-2 text-gray-700 text-xs">
+                          <td className="px-4 py-2 whitespace-nowrap">{statusBadge(story.issue.fields.status.name)}</td>
+                          <td className="px-4 py-2 whitespace-nowrap">{completionStatusBadge(story.issue.fields._completionStatus)}</td>
+                          <td className="px-4 py-2 text-gray-700 text-xs break-words">
                             {story.issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                           </td>
-                          <td className="px-4 py-2 text-gray-500 text-xs">{story.issue.fields.issuetype.name}</td>
+                          <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">{story.issue.fields.issuetype.name}</td>
                           <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
                             {storySP > 0 ? storySP : <span className="text-gray-300">—</span>}
                           </td>
@@ -208,41 +216,40 @@ function EpicSection({ epic, jiraBaseUrl, spFieldId }: {
                           const taskSP = getStoryPoints(task, spFieldId);
                           return (
                             <tr key={task.key} className="bg-blue-50 border-l-4 border-blue-200">
-                              <td className="pl-8 pr-4 py-2 text-xs text-blue-700">
+                              <td className="pl-8 pr-4 py-2 text-xs text-blue-700 break-words">
                                 <span className="text-gray-400 mr-1">↳</span>
                                 <TicketLink issueKey={task.key} jiraBaseUrl={jiraBaseUrl} /><br />
                                 <span className="text-gray-600 font-normal">{task.fields.summary}</span>
                               </td>
-                              <td className="px-4 py-2">{statusBadge(task.fields.status.name)}</td>
-                              <td className="px-4 py-2">{completionStatusBadge(task.fields._completionStatus)}</td>
-                              <td className="px-4 py-2 text-gray-700 text-xs">
+                              <td className="px-4 py-2 whitespace-nowrap">{statusBadge(task.fields.status.name)}</td>
+                              <td className="px-4 py-2 whitespace-nowrap">{completionStatusBadge(task.fields._completionStatus)}</td>
+                              <td className="px-4 py-2 text-gray-700 text-xs break-words">
                                 {task.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                               </td>
-                              <td className="px-4 py-2 text-gray-500 text-xs">{task.fields.issuetype.name}</td>
+                              <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">{task.fields.issuetype.name}</td>
                               <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
                                 {taskSP > 0 ? taskSP : <span className="text-gray-300">—</span>}
                               </td>
                             </tr>
                           );
                         })}
-                      </>
+                      </Fragment>
                     );
                   })}
                   {epic.orphanIssues.map((issue, i) => {
                     const issueSP = getStoryPoints(issue, spFieldId);
                     return (
                       <tr key={issue.key} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                        <td className="px-4 py-3 font-medium text-blue-600 text-xs">
+                        <td className="px-4 py-3 font-medium text-blue-600 text-xs break-words">
                           <TicketLink issueKey={issue.key} jiraBaseUrl={jiraBaseUrl} /><br />
                           <span className="text-gray-700 font-normal">{issue.fields.summary}</span>
                         </td>
-                        <td className="px-4 py-2">{statusBadge(issue.fields.status.name)}</td>
-                        <td className="px-4 py-2">{completionStatusBadge(issue.fields._completionStatus)}</td>
-                        <td className="px-4 py-2 text-gray-700 text-xs">
+                        <td className="px-4 py-2 whitespace-nowrap">{statusBadge(issue.fields.status.name)}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{completionStatusBadge(issue.fields._completionStatus)}</td>
+                        <td className="px-4 py-2 text-gray-700 text-xs break-words">
                           {issue.fields.assignee?.displayName || <span className="text-gray-400 italic">Unassigned</span>}
                         </td>
-                        <td className="px-4 py-2 text-center text-gray-500 text-xs">—</td>
-                        <td className="px-4 py-2 text-gray-500 text-xs">{issue.fields.issuetype.name}</td>
+                        <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">{issue.fields.issuetype.name}</td>
                         <td className="px-4 py-2 text-center text-xs font-semibold text-indigo-700">
                           {issueSP > 0 ? issueSP : <span className="text-gray-300">—</span>}
                         </td>
